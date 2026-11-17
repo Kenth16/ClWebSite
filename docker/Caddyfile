@@ -1,0 +1,13 @@
+# Reverse proxy : une seule origine pour le site et l'API.
+# Les WebSockets (présence en ligne, étape 3) passeront aussi par /api.
+:8080 {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:4000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

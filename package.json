@@ -1,0 +1,36 @@
+{
+  "name": "kenpai",
+  "private": true,
+  "description": "Kenpai — plateforme éducative communautaire",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -n api,web -c yellow,cyan \"npm run dev -w @kenpai/api\" \"npm run dev -w @kenpai/web\"",
+    "dev:web": "npm run dev -w @kenpai/web",
+    "dev:api": "npm run dev -w @kenpai/api",
+    "build": "npm run build -w @kenpai/api && npm run build -w @kenpai/web",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "^16.4.6",
+    "prettier": "^3.6.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "^5.1.0"
+  },
+  "type": "module"
+}

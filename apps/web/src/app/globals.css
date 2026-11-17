@@ -1,0 +1,181 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * ─── Kenpai — système de design ─────────────────────────────────────────────
+ * Ambiance : médiéval fantasy doux. Parchemin et encre le jour, nuit étoilée
+ * le soir. Une seule couleur d'accent (vert sauge) pour les interactions, et
+ * un or discret réservé aux ornements. Tous les composants consomment ces
+ * jetons : ne jamais coder une couleur en dur dans un composant.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --radius: 0.75rem;
+  --sidebar-width: 16rem;
+  --sidebar-width-icon: 3.5rem;
+
+  /* Parchemin (thème clair) */
+  --background: #f6f1e7;
+  --foreground: #2b2a33;
+  --card: #fbf8f1;
+  --card-foreground: #2b2a33;
+  --popover: #fdfbf6;
+  --popover-foreground: #2b2a33;
+  --muted: #ede6d7;
+  --muted-foreground: #66636b;
+  --accent: #ebe3d1;
+  --accent-foreground: #2b2a33;
+  --primary: #3d6b60;
+  --primary-foreground: #f8f5ee;
+  --destructive: #a3413a;
+  --border: #e0d6c2;
+  --input: #d6cab2;
+  --ring: #3d6b60;
+  --gold: #a07c35;
+  --gold-soft: #a07c3529;
+
+  --sidebar: #efe8da;
+  --sidebar-foreground: #2b2a33;
+  --sidebar-muted: #6b6870;
+  --sidebar-accent: #e4dac6;
+  --sidebar-border: #ddd2bb;
+
+  --glow-1: #c9ddd433;
+  --glow-2: #e8d5a840;
+  --star: transparent;
+}
+
+.dark {
+  /* Nuit étoilée (thème sombre) */
+  --background: #11131b;
+  --foreground: #e8e3d5;
+  --card: #171a24;
+  --card-foreground: #e8e3d5;
+  --popover: #1a1d28;
+  --popover-foreground: #e8e3d5;
+  --muted: #1f2330;
+  --muted-foreground: #9e9caa;
+  --accent: #232837;
+  --accent-foreground: #e8e3d5;
+  --primary: #8fc4b3;
+  --primary-foreground: #0f211c;
+  --destructive: #e07a6f;
+  --border: #2a2f3d;
+  --input: #343a4a;
+  --ring: #8fc4b3;
+  --gold: #d2b36b;
+  --gold-soft: #d2b36b24;
+
+  --sidebar: #0d0f16;
+  --sidebar-foreground: #e2ddcf;
+  --sidebar-muted: #8f8d9b;
+  --sidebar-accent: #1b1f2b;
+  --sidebar-border: #20242f;
+
+  --glow-1: #8fc4b314;
+  --glow-2: #d2b36b10;
+  --star: #e8e3d555;
+}
+
+@theme inline {
+  --font-sans: "Alegreya Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Alegreya Variable", "Alegreya", ui-serif, Georgia, serif;
+  --font-display: "Cinzel", "Alegreya Variable", ui-serif, Georgia, serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-border: var(--sidebar-border);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-sidebar text-foreground font-sans antialiased;
+    font-size: 1.0625rem;
+    line-height: 1.55;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-serif text-balance;
+    letter-spacing: -0.005em;
+  }
+  ::selection {
+    background: var(--gold-soft);
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Fond du panneau principal : halos doux et, la nuit, quelques étoiles. */
+  .bg-sky {
+    background-color: var(--background);
+    background-image:
+      radial-gradient(1px 1px at 12% 8%, var(--star), transparent 60%),
+      radial-gradient(1px 1px at 37% 3%, var(--star), transparent 60%),
+      radial-gradient(1.5px 1.5px at 68% 6%, var(--star), transparent 60%),
+      radial-gradient(1px 1px at 84% 14%, var(--star), transparent 60%),
+      radial-gradient(1px 1px at 55% 17%, var(--star), transparent 60%),
+      radial-gradient(60rem 22rem at 15% -6rem, var(--glow-1), transparent 70%),
+      radial-gradient(50rem 20rem at 95% -4rem, var(--glow-2), transparent 70%);
+    background-repeat: no-repeat;
+  }
+
+  /* Liseré doré intérieur : rappelle l'enluminure sans surcharger. */
+  .frame-gilded {
+    box-shadow:
+      inset 0 0 0 1px var(--gold-soft),
+      0 1px 2px rgb(0 0 0 / 0.04);
+  }
+
+  /* Petit losange doré utilisé comme puce décorative. */
+  .rune {
+    @apply inline-block size-1.5 rotate-45 bg-gold/70;
+  }
+}
