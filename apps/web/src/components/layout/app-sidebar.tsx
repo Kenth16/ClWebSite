@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { Collapsible } from "radix-ui";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 import { catalog } from "@kenpai/content";
+import type { SessionUser } from "@kenpai/shared";
 import { icons } from "@/components/icons";
 import { LogoMark } from "@/components/logo";
 import { cn } from "@/lib/utils";
@@ -171,7 +172,7 @@ function Brand() {
   );
 }
 
-export function AppSidebar() {
+export function AppSidebar({ user }: { user: SessionUser | null }) {
   return (
     <Sidebar label="Navigation principale">
       <SidebarHeader>
@@ -197,7 +198,7 @@ export function AppSidebar() {
         </nav>
       </SidebarContent>
       <SidebarFooter>
-        <NavAccount />
+        <NavAccount user={user} />
       </SidebarFooter>
     </Sidebar>
   );

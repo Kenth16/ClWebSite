@@ -62,3 +62,29 @@ export function DropdownMenuRadioItem({
     </Primitive.RadioItem>
   );
 }
+
+export function DropdownMenuItem({
+  className,
+  variant = "default",
+  ...props
+}: React.ComponentProps<typeof Primitive.Item> & { variant?: "default" | "destructive" }) {
+  return (
+    <Primitive.Item
+      className={cn(
+        "relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none",
+        "focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4 [&_svg]:text-muted-foreground",
+        variant === "destructive" &&
+          "text-destructive focus:text-destructive [&_svg]:text-destructive",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export function DropdownMenuSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof Primitive.Separator>) {
+  return <Primitive.Separator className={cn("-mx-1 my-1 h-px bg-border", className)} {...props} />;
+}

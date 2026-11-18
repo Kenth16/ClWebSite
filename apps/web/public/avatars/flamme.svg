@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Avatar flamme">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="30%" r="80%">
+      <stop offset="0" stop-color="#a3413a"/>
+      <stop offset="1" stop-color="#5c211d"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#bg)"/>
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#d2b36b" stroke-width="1" opacity="0.45"/>
+  <g fill="#f4ead6"><path d="M32 12 C34 22 44 26 44 38 A12 12 0 0 1 20 38 C20 31 24 28 26 24 C27 29 29 31 31 31 C29 24 30 17 32 12 Z"/><path d="M32 33 C34 37 37 38 37 42 A5 5 0 0 1 27 42 C27 38 30 37 32 33 Z" fill="#a3413a" opacity="0.55"/></g>
+</svg>

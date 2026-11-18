@@ -1,3 +1,4 @@
+import path from "node:path";
 import { z } from "zod";
 
 /**
@@ -10,9 +11,19 @@ const envSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(4000),
   API_HOST: z.string().default("0.0.0.0"),
   WEB_ORIGIN: z.url().default("http://localhost:3000"),
+  /** Dossier des migrations SQL (par défaut : celui du paquet @kenpai/db). */
+  MIGRATIONS_DIR: z.string().default(path.resolve(process.cwd(), "../../packages/db/migrations")),
+  /**
+   * Cookie de session réservé au HTTPS. Activé par défaut en production ;
+   * à désactiver uniquement pour un test local en HTTP (ex. Docker sur localhost).
+   */
+  COOKIE_SECURE: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true")),
 });
 
-export type Env = z.infer<typeof envSchema>;
+export type Env = Omit<z.infer<typeof envSchema>, "COOKIE_SECURE"> & { COOKIE_SECURE: boolean };
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const parsed = envSchema.safeParse(source);
@@ -20,5 +31,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     const details = parsed.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`);
     throw new Error(`Configuration invalide :\n${details.join("\n")}`);
   }
-  return parsed.data;
+  const env = parsed.data;
+  return { ...env, COOKIE_SECURE: env.COOKIE_SECURE ?? env.NODE_ENV === "production" };
 }

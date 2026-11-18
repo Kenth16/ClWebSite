@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Avatar goutte">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="30%" r="80%">
+      <stop offset="0" stop-color="#2f6f86"/>
+      <stop offset="1" stop-color="#173a47"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#bg)"/>
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#d2b36b" stroke-width="1" opacity="0.45"/>
+  <g fill="#f4ead6"><path d="M32 13 C38 23 45 30 45 38 A13 13 0 0 1 19 38 C19 30 26 23 32 13 Z"/><path d="M26 39 A6 6 0 0 0 31 45" fill="none" stroke="#2f6f86" stroke-width="2.4" stroke-linecap="round" opacity="0.6"/></g>
+</svg>

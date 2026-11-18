@@ -6,7 +6,9 @@ import { EmptyState } from "@/components/page/empty-state";
 import { PageContainer } from "@/components/page/page-container";
 import { SectionTitle } from "@/components/page/page-header";
 import { Button } from "@/components/ui/button";
+import { getCurrentUser } from "@/lib/session";
 import { cn } from "@/lib/utils";
+import type { SessionUser } from "@kenpai/shared";
 
 /** Disposition « mosaïque » : deux grandes cartes, puis trois plus petites. */
 const layout = [
@@ -17,10 +19,11 @@ const layout = [
   "md:col-span-2",
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  const user = await getCurrentUser();
   return (
     <PageContainer className="space-y-12">
-      <Hero />
+      <Hero user={user} />
 
       <section aria-labelledby="disciplines">
         <SectionTitle id="disciplines">Disciplines</SectionTitle>
@@ -47,27 +50,33 @@ export default function HomePage() {
         </section>
         <section aria-labelledby="recentes">
           <SectionTitle id="recentes">Vos dernières activités</SectionTitle>
-          <EmptyState
-            icon={History}
-            title="Retrouvez votre progression"
-            action={
-              <Button asChild>
-                <Link href="/connexion">
-                  <LogIn aria-hidden="true" />
-                  Se connecter
-                </Link>
-              </Button>
-            }
-          >
-            Connectez-vous pour reprendre vos activités là où vous les aviez laissées.
-          </EmptyState>
+          {user ? (
+            <EmptyState icon={History} title="Aucune activité pour l'instant">
+              Vos quiz, jeux et dictées apparaîtront ici dès vos premières parties.
+            </EmptyState>
+          ) : (
+            <EmptyState
+              icon={History}
+              title="Retrouvez votre progression"
+              action={
+                <Button asChild>
+                  <Link href="/connexion">
+                    <LogIn aria-hidden="true" />
+                    Se connecter
+                  </Link>
+                </Button>
+              }
+            >
+              Connectez-vous pour reprendre vos activités là où vous les aviez laissées.
+            </EmptyState>
+          )}
         </section>
       </div>
     </PageContainer>
   );
 }
 
-function Hero() {
+function Hero({ user }: { user: SessionUser | null }) {
   return (
     <section
       aria-labelledby="bienvenue"
@@ -80,7 +89,7 @@ function Hero() {
           Académie des savoirs
         </p>
         <h1 id="bienvenue" className="mt-3 text-4xl font-semibold sm:text-5xl">
-          Bienvenue à Kenpai
+          {user ? `Bon retour, ${user.username}` : "Bienvenue à Kenpai"}
         </h1>
         <p className="mt-4 text-lg text-muted-foreground">
           Apprenez, révisez et mesurez-vous entre amis. Géographie, histoire, français, calcul
@@ -93,12 +102,14 @@ function Hero() {
               Explorer les disciplines
             </a>
           </Button>
-          <Button asChild size="lg" variant="outline">
-            <Link href="/inscription">
-              <UserPlus aria-hidden="true" />
-              Créer un compte
-            </Link>
-          </Button>
+          {!user && (
+            <Button asChild size="lg" variant="outline">
+              <Link href="/inscription">
+                <UserPlus aria-hidden="true" />
+                Créer un compte
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
     </section>

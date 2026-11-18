@@ -1,23 +1,25 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { redirect } from "next/navigation";
+import { LoginForm } from "@/components/auth/login-form";
+import { getCurrentUser, safeRedirect } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Connexion" };
 
-export default function Page() {
+type Props = { searchParams: Promise<{ redirect?: string | string[] }> };
+
+export default async function LoginPage({ searchParams }: Props) {
+  const redirectTo = safeRedirect((await searchParams).redirect);
+  if (await getCurrentUser()) redirect(redirectTo);
+
   return (
-    <div className="text-center">
-      <h1 className="text-2xl font-semibold">Se connecter</h1>
-      <p className="mt-2 text-muted-foreground">
-        Les comptes ouvrent très bientôt. Vous pourrez vous inscrire par e-mail ou avec Discord.
-      </p>
-      <Button asChild variant="outline" className="mt-6">
-        <Link href="/">
-          <ArrowLeft aria-hidden="true" />
-          Retour à l&apos;accueil
-        </Link>
-      </Button>
-    </div>
+    <>
+      <div className="mb-6 text-center">
+        <h1 className="text-2xl font-semibold">Bon retour parmi nous</h1>
+        <p className="mt-1 text-muted-foreground">
+          Connectez-vous pour reprendre votre progression.
+        </p>
+      </div>
+      <LoginForm redirectTo={redirectTo} />
+    </>
   );
 }

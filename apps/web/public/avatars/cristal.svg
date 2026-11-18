@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Avatar cristal">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="30%" r="80%">
+      <stop offset="0" stop-color="#3f7c8c"/>
+      <stop offset="1" stop-color="#1d4048"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#bg)"/>
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#d2b36b" stroke-width="1" opacity="0.45"/>
+  <g fill="#f4ead6"><path d="M32 11 L43 22 L39 51 L25 51 L21 22 Z"/><path d="M21 22 L32 27 L43 22 M32 27 L32 51" fill="none" stroke="#3f7c8c" stroke-width="1.8" opacity="0.7"/></g>
+</svg>

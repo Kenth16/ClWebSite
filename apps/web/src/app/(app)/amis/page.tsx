@@ -16,7 +16,7 @@ export default function Page() {
         icon="friends"
       />
       <EmptyState icon={Hourglass} title="Rubrique en construction">
-        Cette rubrique sera disponible avec l&apos;ouverture des comptes.
+        Cette rubrique sera disponible très prochainement.
       </EmptyState>
     </PageContainer>
   );

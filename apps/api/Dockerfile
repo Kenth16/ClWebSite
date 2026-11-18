@@ -21,6 +21,8 @@ COPY packages/db/package.json packages/db/
 COPY packages/content/package.json packages/content/
 RUN npm ci --omit=dev -w @kenpai/api --include-workspace-root=false
 COPY --from=build /app/apps/api/dist apps/api/dist
+COPY packages/db/migrations migrations
+ENV MIGRATIONS_DIR=/app/migrations
 USER node
 EXPOSE 4000
 CMD ["node", "apps/api/dist/server.js"]

@@ -35,6 +35,10 @@ docker compose --profile full up --build   # → http://localhost:8080
 | `npm run format`            | Formatage Prettier                          |
 | `npm run db:up` / `db:down` | Démarrer / arrêter PostgreSQL               |
 
+Les tests d'intégration de l'API utilisent une base dédiée `kenpai_test`, créée automatiquement
+dans le PostgreSQL local (`npm run db:up`). Sans base disponible, ils sont ignorés en local
+(obligatoires en CI).
+
 ## Organisation
 
 ```

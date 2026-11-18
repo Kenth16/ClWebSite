@@ -65,7 +65,8 @@ Ajouter une période historique = ajouter une entrée.
 
 0. ✅ Socle : monorepo, outillage, PostgreSQL, API, CI
 1. ✅ Design et navigation
-2. Authentification (e-mail + Discord, mot de passe oublié)
+2. ✅ Comptes : inscription, connexion, déconnexion, profil modifiable (pseudo, avatar)
+   — à venir : connexion Discord, mot de passe oublié
 3. Profil (structure) et amis, présence en temps réel
 4. Moteur de quiz générique et suivi des activités
 5. Géographie

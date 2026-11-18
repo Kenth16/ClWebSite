@@ -31,6 +31,8 @@ services:
       API_PORT: 4000
       API_HOST: 0.0.0.0
       WEB_ORIGIN: http://localhost:8080
+      # Le proxy local est en HTTP : à passer à true derrière HTTPS en production.
+      COOKIE_SECURE: "false"
     depends_on:
       db:
         condition: service_healthy
