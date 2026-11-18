@@ -198,7 +198,7 @@ export const catalog: CatalogEntry[] = [
     title: "Calcul mental",
     description: "Résolvez les opérations avant qu'elles ne touchent le sol.",
     icon: "math",
-    status: "in-progress",
+    status: "available",
   },
   {
     slug: "quiz",

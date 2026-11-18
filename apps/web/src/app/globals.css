@@ -112,6 +112,19 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /* Points gagnés ou perdus qui s'envolent (jeu de calcul mental). */
+  --animate-float-away: float-away 0.8s ease-out forwards;
+  @keyframes float-away {
+    from {
+      opacity: 1;
+      transform: translate(-50%, 0) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translate(-50%, -2.75rem) scale(1.15);
+    }
+  }
 }
 
 @layer base {
