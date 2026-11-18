@@ -27,15 +27,14 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
 });
 
 /**
- * Appel à l'API depuis le rendu serveur, au nom de l'utilisateur connecté.
- * Renvoie null si personne n'est connecté ou en cas d'erreur.
+ * Appel à l'API depuis le rendu serveur, au nom de l'utilisateur connecté
+ * (ou en visiteur anonyme). Renvoie null en cas d'erreur (404, 401…).
  */
 export async function serverApi<T>(path: string): Promise<T | null> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!token) return null;
   try {
     const response = await fetch(`${apiUrl}/api${path}`, {
-      headers: { cookie: `${SESSION_COOKIE}=${token}` },
+      headers: token ? { cookie: `${SESSION_COOKIE}=${token}` } : undefined,
       cache: "no-store",
     });
     return response.ok ? ((await response.json()) as T) : null;

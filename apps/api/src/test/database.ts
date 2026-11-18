@@ -36,7 +36,9 @@ export async function openTestDatabase() {
   return {
     ...database,
     reset: () =>
-      database.db.execute("truncate table friendships, sessions, users restart identity cascade"),
+      database.db.execute(
+        "truncate table reviews, games, friendships, sessions, users restart identity cascade",
+      ),
   };
 }
 

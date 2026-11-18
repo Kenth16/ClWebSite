@@ -21,6 +21,12 @@ const staticPages: Record<string, string> = {
 function crumbsFor(pathname: string): Crumb[] {
   const label = staticPages[pathname];
   if (label) return [{ href: pathname, label }];
+  if (pathname.startsWith("/avis-desastreux/")) {
+    return [
+      { href: "/avis-desastreux", label: "Avis désastreux" },
+      { href: pathname, label: "Fiche du jeu" },
+    ];
+  }
   const segments = pathname.split("/").filter(Boolean);
   const resolved = resolveEntry(segments);
   if (!resolved) return [];
