@@ -1,12 +1,20 @@
 import type { Metadata } from "next";
-import { Hourglass } from "lucide-react";
-import { EmptyState } from "@/components/page/empty-state";
+import { redirect } from "next/navigation";
+import type { FriendsOverview } from "@kenpai/shared";
+import { FriendsPanel } from "@/components/friends/friends-panel";
 import { PageContainer } from "@/components/page/page-container";
 import { PageHeader } from "@/components/page/page-header";
+import { getCurrentUser, serverApi } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Amis" };
 
-export default function Page() {
+const empty: FriendsOverview = { friends: [], incoming: [], outgoing: [] };
+
+export default async function FriendsPage() {
+  const user = await getCurrentUser();
+  if (!user) redirect("/connexion?redirect=/amis");
+  const initial = (await serverApi<FriendsOverview>("/friends")) ?? empty;
+
   return (
     <PageContainer className="space-y-8">
       <PageHeader
@@ -15,9 +23,7 @@ export default function Page() {
         description="Retrouvez vos amis, leurs demandes et leur présence en ligne."
         icon="friends"
       />
-      <EmptyState icon={Hourglass} title="Rubrique en construction">
-        Cette rubrique sera disponible très prochainement.
-      </EmptyState>
+      <FriendsPanel initial={initial} />
     </PageContainer>
   );
 }

@@ -5,6 +5,7 @@ import { HttpError, parseInput, uniqueViolation } from "../../lib/errors";
 import { requireUser } from "../../plugins/auth";
 import { emailTaken, findByLogin, toSessionUser, usernameTaken } from "../users/repository";
 import { hashPassword, verifyAgainstDummy, verifyPassword } from "./password";
+import { clearPresence } from "../friends/repository";
 import { createSession, deleteSession } from "./sessions";
 
 interface AuthRoutesOptions {
@@ -79,6 +80,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
 
   app.post("/logout", async (request, reply) => {
     if (request.sessionId) await deleteSession(db, request.sessionId);
+    if (request.user) await clearPresence(db, request.user.id);
     app.clearSessionCookie(reply);
     return reply.status(204).send();
   });

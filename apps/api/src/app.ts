@@ -11,6 +11,7 @@ import { authPlugin } from "./plugins/auth";
 import { originCheckPlugin } from "./plugins/origin-check";
 import { authRoutes } from "./modules/auth/routes";
 import { userRoutes } from "./modules/users/routes";
+import { friendRoutes } from "./modules/friends/routes";
 import { healthRoutes } from "./routes/health";
 
 export interface AppDeps {
@@ -73,6 +74,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     rateLimitMax: deps.authRateLimit ?? 10,
   });
   await app.register(userRoutes, { prefix: "/api/users", db: deps.db });
+  await app.register(friendRoutes, { prefix: "/api/friends", db: deps.db });
 
   return app;
 }

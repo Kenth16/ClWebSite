@@ -17,6 +17,8 @@ export const users = pgTable(
     avatar: varchar("avatar", { length: 32 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Dernière activité connue (présence en ligne). Null : jamais vu ou déconnecté. */
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("users_username_lower_idx").on(sql`lower(${t.username})`),

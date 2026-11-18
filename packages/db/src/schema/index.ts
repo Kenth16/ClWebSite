@@ -5,3 +5,4 @@
  * Les migrations sont appliquées automatiquement au démarrage de l'API.
  */
 export * from "./users";
+export * from "./friendships";

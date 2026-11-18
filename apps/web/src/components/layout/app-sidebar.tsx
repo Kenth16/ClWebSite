@@ -42,6 +42,7 @@ const general: NavLink[] = [{ href: "/", label: "Accueil", icon: icons.home }];
 
 const community: NavLink[] = [
   { href: "/amis", label: "Amis", icon: icons.friends },
+  { href: "/avis-desastreux", label: "Avis désastreux", icon: icons.reviews },
   { href: "/profil", label: "Profil", icon: icons.profile },
 ];
 

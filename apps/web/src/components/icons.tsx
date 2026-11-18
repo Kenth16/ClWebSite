@@ -17,6 +17,7 @@ import {
   ScrollText,
   Sparkles,
   Swords,
+  ThumbsDown,
   Trophy,
   UserRound,
   Users,
@@ -44,6 +45,7 @@ export const icons: Record<IconKey, LucideIcon> = {
   quiz: Trophy,
   general: Sparkles,
   friends: Users,
+  reviews: ThumbsDown,
   profile: UserRound,
 };
 

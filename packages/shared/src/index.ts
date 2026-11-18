@@ -6,3 +6,4 @@
 export * from "./auth";
 export * from "./avatars";
 export * from "./health";
+export * from "./friends";

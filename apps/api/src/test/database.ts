@@ -35,7 +35,8 @@ export async function openTestDatabase() {
   await database.migrate(migrationsFolder);
   return {
     ...database,
-    reset: () => database.db.execute("truncate table sessions, users restart identity cascade"),
+    reset: () =>
+      database.db.execute("truncate table friendships, sessions, users restart identity cascade"),
   };
 }
 

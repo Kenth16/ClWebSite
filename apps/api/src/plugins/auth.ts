@@ -2,6 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Database, User } from "@kenpai/db";
 import { HttpError } from "../lib/errors";
+import { touchPresence } from "../modules/friends/repository";
 import { SESSION_COOKIE, SESSION_DURATION_MS, validateSession } from "../modules/auth/sessions";
 
 declare module "fastify" {
@@ -51,6 +52,8 @@ export const authPlugin = fp<AuthPluginOptions>(async (app, { db, cookieSecure }
     request.user = session.user;
     request.sessionId = session.sessionId;
     if (session.renewedUntil) app.setSessionCookie(reply, token, session.renewedUntil);
+    // Toute requête authentifiée compte comme une activité (présence en ligne).
+    await touchPresence(db, session.user);
   });
 });
 

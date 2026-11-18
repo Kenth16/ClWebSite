@@ -14,6 +14,7 @@ interface Crumb {
 const staticPages: Record<string, string> = {
   "/": "Accueil",
   "/amis": "Amis",
+  "/avis-desastreux": "Avis désastreux",
   "/profil": "Profil",
 };
 

@@ -28,6 +28,7 @@ export type IconKey =
   | "quiz"
   | "general"
   | "friends"
+  | "reviews"
   | "profile";
 
 /**

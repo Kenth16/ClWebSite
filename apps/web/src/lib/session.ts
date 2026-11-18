@@ -26,6 +26,24 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   }
 });
 
+/**
+ * Appel à l'API depuis le rendu serveur, au nom de l'utilisateur connecté.
+ * Renvoie null si personne n'est connecté ou en cas d'erreur.
+ */
+export async function serverApi<T>(path: string): Promise<T | null> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+  try {
+    const response = await fetch(`${apiUrl}/api${path}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${token}` },
+      cache: "no-store",
+    });
+    return response.ok ? ((await response.json()) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** N'accepte que les redirections internes au site (évite les redirections ouvertes). */
 export function safeRedirect(target: string | string[] | undefined, fallback = "/"): string {
   const value = Array.isArray(target) ? target[0] : target;

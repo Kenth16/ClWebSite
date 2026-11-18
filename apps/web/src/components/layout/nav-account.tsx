@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronsUpDown, LogIn, LogOut, UserPlus, UserRound } from "lucide-react";
-import type { SessionUser } from "@kenpai/shared";
+import { PRESENCE_HEARTBEAT_MS, type SessionUser } from "@kenpai/shared";
 import { UserAvatar } from "@/components/user-avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,10 +29,20 @@ function NavUser({ user }: { user: SessionUser }) {
   const { collapsed, isMobile, setOpenMobile } = useSidebar();
   const [loggingOut, setLoggingOut] = React.useState(false);
 
-  // Un appel direct à l'API depuis le navigateur permet au serveur de
-  // prolonger la session (cookie renouvelé) tant que l'utilisateur est actif.
+  // Appels réguliers à l'API tant que la page est visible : le serveur note
+  // la présence en ligne et prolonge la session (cookie renouvelé).
   React.useEffect(() => {
-    fetch("/api/auth/me", { credentials: "same-origin" }).catch(() => {});
+    const ping = () => {
+      if (document.visibilityState !== "visible") return;
+      fetch("/api/auth/me", { credentials: "same-origin" }).catch(() => {});
+    };
+    ping();
+    const timer = setInterval(ping, PRESENCE_HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", ping);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", ping);
+    };
   }, []);
 
   async function logout() {
