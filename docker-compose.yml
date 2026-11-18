@@ -43,6 +43,10 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
     restart: unless-stopped
+    environment:
+      # Le rendu serveur interroge l'API directement sur le réseau Docker
+      # (dans le conteneur, localhost:4000 ne mène nulle part).
+      API_INTERNAL_URL: http://api:4000
     depends_on:
       - api
 
