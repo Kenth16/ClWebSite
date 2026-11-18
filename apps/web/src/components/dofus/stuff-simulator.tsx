@@ -3,7 +3,6 @@
 import * as React from "react";
 import {
   AlertTriangle,
-  Backpack,
   Dumbbell,
   Heart,
   Layers,
@@ -41,6 +40,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ItemIcon, ItemPicker } from "./item-picker";
@@ -304,24 +304,24 @@ export function StuffSimulator() {
   const pickingSlot = SLOTS.find((s) => s.id === picking) ?? null;
   const pickingItem = pickingSlot ? (items[stuff.slots[pickingSlot.id] ?? -1] ?? null) : null;
 
-  const renderSlot = (slotId: SlotId) => {
+  const renderSlot = (slotId: SlotId, side: "left" | "right" | "top") => {
     const slot = SLOTS.find((s) => s.id === slotId)!;
     const id = stuff.slots[slotId];
     const item = id !== undefined ? (items[id] ?? null) : null;
     const loading = id !== undefined && !item;
-    return (
+    const tooLow = item ? item.level > level : false;
+    const unmet = item ? !conditionsMet(item.conditions, { level, totals }) : false;
+    const button = (
       <button
         key={slotId}
         type="button"
         onClick={() => setPicking(slotId)}
-        title={item ? `${item.name} (niv. ${item.level})` : slot.label}
+        title={item ? undefined : slot.label}
         aria-label={item ? `${slot.label} : ${item.name}` : `${slot.label} : vide`}
         className={cn(
           "group relative flex aspect-square w-full items-center justify-center rounded-lg border bg-background/50 transition-colors hover:border-gold/60 hover:bg-accent",
           item && "border-gold/40 bg-card",
-          item &&
-            (item.level > level || !conditionsMet(item.conditions, { level, totals })) &&
-            "border-destructive/70",
+          (tooLow || unmet) && "border-destructive/70",
         )}
       >
         {item ? (
@@ -332,6 +332,52 @@ export function StuffSimulator() {
           </span>
         )}
       </button>
+    );
+    if (!item) return button;
+
+    // Au survol (ou au focus clavier) : les statistiques de l'objet.
+    return (
+      <Tooltip key={slotId}>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent
+          side={side}
+          sideOffset={8}
+          collisionPadding={12}
+          className="w-72 max-w-[calc(100vw-2rem)] border bg-popover p-3 text-popover-foreground shadow-xl"
+        >
+          <div className="flex items-center gap-3">
+            <ItemIcon item={item} className="size-11" />
+            <div className="min-w-0">
+              <p className="font-serif text-base leading-tight font-semibold">{item.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {item.type} · niveau {item.level}
+              </p>
+              {item.set && <p className="text-xs text-gold">{item.set.name}</p>}
+            </div>
+          </div>
+          <ul className="mt-2.5 grid gap-1 border-t pt-2.5 text-sm">
+            {item.effects.map((e, i) => (
+              <EffectRow key={i} effect={e} />
+            ))}
+          </ul>
+          {item.conditions && (
+            <p
+              className={cn(
+                "mt-2 border-t pt-2 text-xs",
+                unmet ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              Conditions : {conditionsText(item.conditions)}
+            </p>
+          )}
+          {tooLow && (
+            <p className="mt-1 text-xs text-destructive">Demande le niveau {item.level}.</p>
+          )}
+          <p className="mt-2 text-[0.7rem] text-muted-foreground">
+            Cliquer pour changer ou retirer
+          </p>
+        </TooltipContent>
+      </Tooltip>
     );
   };
 
@@ -500,10 +546,10 @@ export function StuffSimulator() {
         {/* Centre : équipement */}
         <div className="order-1 space-y-4 xl:order-2">
           <section aria-label="Équipement" className="frame-gilded bg-sky rounded-2xl border p-4">
-            <div className="grid grid-cols-[1fr_minmax(0,2.2fr)_1fr] gap-3">
+            <div className="grid grid-cols-[1fr_minmax(0,2.7fr)_1fr] gap-3">
               <div className="grid gap-2">
                 {(["amulet", "shield", "ring1", "belt", "boots"] as const).map((id) =>
-                  renderSlot(id),
+                  renderSlot(id, "right"),
                 )}
               </div>
               <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-dashed border-gold/30 bg-card/40 p-3 text-sm">
@@ -549,12 +595,14 @@ export function StuffSimulator() {
                 )}
               </div>
               <div className="grid gap-2">
-                {(["hat", "weapon", "ring2", "cloak", "pet"] as const).map((id) => renderSlot(id))}
+                {(["hat", "weapon", "ring2", "cloak", "pet"] as const).map((id) =>
+                  renderSlot(id, "left"),
+                )}
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-6 gap-2">
+            <div className="mx-auto mt-3 grid max-w-[30rem] grid-cols-6 gap-2">
               {(["dofus1", "dofus2", "dofus3", "dofus4", "dofus5", "dofus6"] as const).map((id) =>
-                renderSlot(id),
+                renderSlot(id, "top"),
               )}
             </div>
           </section>
@@ -600,29 +648,6 @@ export function StuffSimulator() {
                         Équipez un objet de plus pour activer les bonus.
                       </p>
                     )}
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-          )}
-
-          {equipped.length > 0 && (
-            <Panel title="Objets équipés" icon={Backpack}>
-              <ul className="grid gap-3 sm:grid-cols-2">
-                {equipped.map(({ slot, item }) => (
-                  <li key={slot.id} className="flex gap-3 rounded-lg border bg-background/40 p-3">
-                    <ItemIcon item={item} className="size-10" />
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{item.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {slot.label} · niv. {item.level}
-                      </p>
-                      <ul className="mt-1.5 grid gap-0.5 text-xs">
-                        {item.effects.map((e, i) => (
-                          <EffectRow key={i} effect={e} />
-                        ))}
-                      </ul>
-                    </div>
                   </li>
                 ))}
               </ul>
