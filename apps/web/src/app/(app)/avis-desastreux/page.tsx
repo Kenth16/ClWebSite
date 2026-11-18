@@ -4,7 +4,7 @@ import { LogIn } from "lucide-react";
 import type { GameSummary } from "@kenpai/shared";
 import { PageContainer } from "@/components/page/page-container";
 import { PageHeader, SectionTitle } from "@/components/page/page-header";
-import { AddGameForm } from "@/components/reviews/add-game-form";
+import { CatalogPicker } from "@/components/reviews/catalog-picker";
 import { GamesList } from "@/components/reviews/games-list";
 import { CriteriaGrid } from "@/components/reviews/score";
 import { Button } from "@/components/ui/button";
@@ -30,7 +30,7 @@ export default async function DisastrousReviewsPage() {
         icon="reviews"
       />
 
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_24rem]">
+      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_22rem]">
         <section aria-labelledby="jeux-notes" className="min-w-0">
           <SectionTitle id="jeux-notes">Jeux évalués</SectionTitle>
           <GamesList games={data?.games ?? []} />
@@ -38,7 +38,14 @@ export default async function DisastrousReviewsPage() {
 
         <aside className="space-y-8">
           {user ? (
-            <AddGameForm />
+            <div className="frame-gilded rounded-xl border bg-card/70 p-5">
+              <p className="font-serif text-xl font-semibold">Donnez votre avis</p>
+              <p className="mt-1 mb-4 text-sm text-muted-foreground">
+                Choisissez un jeu dans le catalogue : s&apos;il a déjà été noté, vous arriverez sur
+                sa fiche.
+              </p>
+              <CatalogPicker />
+            </div>
           ) : (
             <div className="frame-gilded rounded-xl border bg-card/70 p-5">
               <p className="font-serif text-xl font-semibold">Donnez votre avis</p>

@@ -22,6 +22,13 @@
       "when": 1795008018957,
       "tag": "0002_game_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795018528812,
+      "tag": "0003_games_from_rawg",
+      "breakpoints": true
     }
   ]
 }

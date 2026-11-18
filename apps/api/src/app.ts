@@ -14,11 +14,12 @@ import { userRoutes } from "./modules/users/routes";
 import { friendRoutes } from "./modules/friends/routes";
 import { reviewRoutes } from "./modules/reviews/routes";
 import { DofusClient } from "./modules/dofus/client";
+import { RawgClient } from "./modules/rawg/client";
 import { dofusRoutes } from "./modules/dofus/routes";
 import { healthRoutes } from "./routes/health";
 
 export interface AppDeps {
-  env: Pick<Env, "NODE_ENV" | "WEB_ORIGIN" | "COOKIE_SECURE">;
+  env: Pick<Env, "NODE_ENV" | "WEB_ORIGIN" | "COOKIE_SECURE"> & { RAWG_API_KEY?: string };
   db: Database;
   /** Vérifie la disponibilité de la base (injecté pour faciliter les tests). */
   pingDatabase: () => Promise<boolean>;
@@ -26,6 +27,8 @@ export interface AppDeps {
   authRateLimit?: number;
   /** Accès aux données Dofus (remplaçable dans les tests). */
   dofus?: DofusClient;
+  /** Catalogue de jeux RAWG (remplaçable dans les tests). */
+  rawg?: RawgClient;
 }
 
 /**
@@ -80,7 +83,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   await app.register(userRoutes, { prefix: "/api/users", db: deps.db });
   await app.register(friendRoutes, { prefix: "/api/friends", db: deps.db });
-  await app.register(reviewRoutes, { prefix: "/api/games", db: deps.db });
+  await app.register(reviewRoutes, {
+    prefix: "/api/games",
+    db: deps.db,
+    rawg: deps.rawg ?? new RawgClient({ apiKey: deps.env.RAWG_API_KEY }),
+  });
   await app.register(dofusRoutes, {
     prefix: "/api/dofus",
     client: deps.dofus ?? new DofusClient(),

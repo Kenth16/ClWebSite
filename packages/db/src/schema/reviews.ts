@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   check,
   index,
+  integer,
   jsonb,
   pgTable,
   smallint,
@@ -14,18 +15,24 @@ import {
 import { users } from "./users";
 
 /**
- * Jeux vidéo évalués dans « Avis désastreux ». Ajoutés par les membres ;
- * le titre est unique sans tenir compte de la casse.
+ * Jeux vidéo évalués dans « Avis désastreux ». Chaque jeu provient du
+ * catalogue RAWG (identifiant unique : pas de doublon « GTA 6 » / « GTA VI »).
+ * Titre, image, date, plateformes et genres sont recopiés à l'ajout.
  */
 export const games = pgTable(
   "games",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    title: varchar("title", { length: 120 }).notNull(),
+    rawgId: integer("rawg_id").notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    coverUrl: text("cover_url"),
+    released: varchar("released", { length: 10 }),
+    platforms: jsonb("platforms").$type<string[]>().notNull().default([]),
+    genres: jsonb("genres").$type<string[]>().notNull().default([]),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("games_title_lower_idx").on(sql`lower(${t.title})`)],
+  (t) => [uniqueIndex("games_rawg_id_idx").on(t.rawgId)],
 );
 
 /**

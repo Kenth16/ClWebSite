@@ -129,19 +129,33 @@ export const reviewInputSchema = z.object({
 });
 export type ReviewInput = z.input<typeof reviewInputSchema>;
 
-export const GAME_TITLE_MAX = 120;
-
+/** Ajout d'un jeu à partir du catalogue RAWG. */
 export const gameInputSchema = z.object({
-  title: z
-    .string()
-    .trim()
-    .min(1, "Saisissez le titre du jeu.")
-    .max(GAME_TITLE_MAX, `Le titre doit contenir au plus ${GAME_TITLE_MAX} caractères.`),
+  rawgId: z.number("Jeu manquant.").int().positive("Jeu inconnu."),
 });
 
-export interface GameSummary {
-  id: string;
+/** Informations d'un jeu issues du catalogue. */
+export interface GameInfo {
   title: string;
+  /** Image de couverture (paysage), ou null. */
+  cover: string | null;
+  /** Date de sortie (AAAA-MM-JJ), ou null si inconnue / à venir. */
+  released: string | null;
+  platforms: string[];
+  genres: string[];
+}
+
+/** Jeu du catalogue RAWG, éventuellement déjà présent dans Avis désastreux. */
+export interface CatalogGame extends GameInfo {
+  rawgId: number;
+  /** Identifiant Kenpai si le jeu a déjà été ajouté, sinon null. */
+  gameId: string | null;
+  reviewCount: number;
+  average: number | null;
+}
+
+export interface GameSummary extends GameInfo {
+  id: string;
   reviewCount: number;
   /** Moyenne des notes globales sur 100, ou null sans avis. */
   average: number | null;
@@ -149,6 +163,8 @@ export interface GameSummary {
   lastActivityAt: string;
   /** L'utilisateur connecté a-t-il déjà noté ce jeu ? */
   reviewedByMe: boolean;
+  /** Dernier avis publié sur ce jeu. */
+  lastReview: { user: PublicUser; total: number; at: string } | null;
 }
 
 export interface GameReview {
@@ -162,7 +178,7 @@ export interface GameReview {
 }
 
 export interface GameDetail {
-  game: { id: string; title: string; createdAt: string };
+  game: GameInfo & { id: string; createdAt: string };
   reviewCount: number;
   average: number | null;
   /** Moyenne de chaque critère, sur 10 (null sans avis). */

@@ -6,9 +6,10 @@ import { EmptyState } from "@/components/page/empty-state";
 import { PageContainer } from "@/components/page/page-container";
 import { SectionTitle } from "@/components/page/page-header";
 import { Button } from "@/components/ui/button";
-import { getCurrentUser } from "@/lib/session";
+import { LatestReviews } from "@/components/reviews/latest-reviews";
+import { getCurrentUser, serverApi } from "@/lib/session";
 import { cn } from "@/lib/utils";
-import type { SessionUser } from "@kenpai/shared";
+import type { GameSummary, SessionUser } from "@kenpai/shared";
 
 /** Disposition « mosaïque » : deux grandes cartes, puis trois plus petites. */
 const layout = [
@@ -20,10 +21,15 @@ const layout = [
 ];
 
 export default async function HomePage() {
-  const user = await getCurrentUser();
+  const [user, latest] = await Promise.all([
+    getCurrentUser(),
+    serverApi<{ games: GameSummary[] }>("/games?reviewed=1&limit=4"),
+  ]);
   return (
     <PageContainer className="space-y-12">
       <Hero user={user} />
+
+      <LatestReviews games={latest?.games ?? []} />
 
       <section aria-labelledby="disciplines">
         <SectionTitle id="disciplines">Disciplines</SectionTitle>

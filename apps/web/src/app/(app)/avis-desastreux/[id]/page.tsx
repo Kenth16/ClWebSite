@@ -6,6 +6,7 @@ import type { GameDetail } from "@kenpai/shared";
 import { EmptyState } from "@/components/page/empty-state";
 import { PageContainer } from "@/components/page/page-container";
 import { SectionTitle } from "@/components/page/page-header";
+import { GameCover } from "@/components/reviews/game-card";
 import { ReviewForm } from "@/components/reviews/review-form";
 import { ReviewList } from "@/components/reviews/review-list";
 import { CriteriaGrid, GradeScaleReminder, TotalScore } from "@/components/reviews/score";
@@ -35,14 +36,36 @@ export default async function GamePage({ params }: Props) {
             Tous les jeux
           </Link>
         </Button>
-        <header className="frame-gilded flex flex-col gap-4 rounded-2xl border bg-card/70 p-6 sm:flex-row sm:items-center sm:justify-between sm:p-8">
-          <div className="min-w-0">
+        <header className="frame-gilded flex flex-col gap-5 rounded-2xl border bg-card/70 p-5 sm:p-6 md:flex-row md:items-center">
+          <GameCover
+            src={data.game.cover}
+            className="aspect-[16/10] w-full shrink-0 rounded-xl shadow-sm md:w-72"
+          />
+          <div className="min-w-0 flex-1">
             <p className="mb-1 flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <span className="rune" aria-hidden="true" />
               Avis désastreux
             </p>
             <h1 className="text-3xl font-semibold break-words sm:text-4xl">{data.game.title}</h1>
-            <p className="mt-1 text-muted-foreground">
+            <p className="mt-1 text-sm text-muted-foreground">
+              {data.game.released
+                ? `Sorti le ${new Intl.DateTimeFormat("fr-FR", { dateStyle: "long", timeZone: "UTC" }).format(new Date(data.game.released))}`
+                : "Date de sortie à venir"}
+              {data.game.platforms.length > 0 && ` · ${data.game.platforms.join(", ")}`}
+            </p>
+            {data.game.genres.length > 0 && (
+              <ul className="mt-2 flex flex-wrap gap-1.5">
+                {data.game.genres.map((g) => (
+                  <li
+                    key={g}
+                    className="rounded border border-input px-1.5 py-0.5 text-xs text-muted-foreground"
+                  >
+                    {g}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-2 text-muted-foreground">
               {data.reviewCount === 0
                 ? "Aucun avis pour l'instant"
                 : `Moyenne de ${data.reviewCount} avis`}

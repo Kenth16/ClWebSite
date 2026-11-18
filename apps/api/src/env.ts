@@ -17,6 +17,8 @@ const envSchema = z.object({
    * Cookie de session réservé au HTTPS. Activé par défaut en production ;
    * à désactiver uniquement pour un test local en HTTP (ex. Docker sur localhost).
    */
+  /** Clé gratuite de l'API RAWG (catalogue de jeux d'Avis désastreux). */
+  RAWG_API_KEY: z.string().trim().optional(),
   COOKIE_SECURE: z
     .enum(["true", "false"])
     .optional()

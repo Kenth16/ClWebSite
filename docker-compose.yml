@@ -33,6 +33,8 @@ services:
       WEB_ORIGIN: http://localhost:8080
       # Le proxy local est en HTTP : à passer à true derrière HTTPS en production.
       COOKIE_SECURE: "false"
+      # Clé RAWG lue depuis le fichier .env du projet.
+      RAWG_API_KEY: ${RAWG_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

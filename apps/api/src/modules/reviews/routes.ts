@@ -1,23 +1,47 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   REVIEW_CRITERIA,
   gameInputSchema,
   reviewInputSchema,
   totalScore,
+  type CatalogGame,
   type CriterionKey,
   type GameDetail,
+  type GameInfo,
   type GameReview,
   type GameSummary,
   type ReviewScores,
 } from "@kenpai/shared";
-import { games, reviews, users, type Database } from "@kenpai/db";
-import { HttpError, parseInput, uniqueViolation } from "../../lib/errors";
+import { games, reviews, users, type Database, type Game } from "@kenpai/db";
+import { HttpError, parseInput } from "../../lib/errors";
 import { currentUser, requireUser } from "../../plugins/auth";
 import { toPublicUser } from "../friends/repository";
+import type { RawgClient } from "../rawg/client";
 
 const idParams = z.object({ id: z.uuid("Identifiant invalide.") });
+const listQuery = z.object({
+  reviewed: z
+    .enum(["0", "1"])
+    .optional()
+    .transform((v) => v === "1"),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+const catalogQuery = z.object({
+  q: z.string().trim().max(100).optional().default(""),
+  page: z.coerce.number().int().min(1).max(50).optional().default(1),
+});
+
+function gameInfo(game: Game): GameInfo {
+  return {
+    title: game.title,
+    cover: game.coverUrl,
+    released: game.released,
+    platforms: game.platforms,
+    genres: game.genres,
+  };
+}
 
 /** Ramène les notes stockées au format attendu (critères manquants à 0). */
 function readScores(raw: Record<string, number>): ReviewScores {
@@ -28,22 +52,24 @@ function readScores(raw: Record<string, number>): ReviewScores {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-export const reviewRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
+export const reviewRoutes: FastifyPluginAsync<{ db: Database; rawg: RawgClient }> = async (
+  app,
+  { db, rawg },
+) => {
   async function findGame(id: string) {
     const [game] = await db.select().from(games).where(eq(games.id, id)).limit(1);
     if (!game) throw new HttpError(404, "Ce jeu n'existe pas.");
     return game;
   }
 
-  /** Liste des jeux avec leur note moyenne, les plus récemment évalués d'abord. */
-  app.get("/", async (request): Promise<{ games: GameSummary[] }> => {
-    const meId = request.user?.id ?? null;
+  /** Statistiques d'avis des jeux donnés (ou de tous). */
+  function gameStats(meId: string | null) {
     const lastActivity = sql<Date>`coalesce(max(${reviews.updatedAt}), ${games.createdAt})`;
-    const rows = await db
+    const reviewCount = sql<number>`count(${reviews.id})::int`;
+    const query = db
       .select({
-        id: games.id,
-        title: games.title,
-        reviewCount: sql<number>`count(${reviews.id})::int`,
+        game: games,
+        reviewCount,
         averageTenths: sql<number | null>`avg(${reviews.totalTenths})::float`,
         lastActivityAt: lastActivity,
         reviewedByMe: meId
@@ -53,48 +79,127 @@ export const reviewRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { 
       .from(games)
       .leftJoin(reviews, eq(reviews.gameId, games.id))
       .groupBy(games.id)
-      .orderBy(desc(lastActivity), games.title);
+      .$dynamic();
+    return { query, lastActivity, reviewCount };
+  }
+
+  const average = (tenths: number | null) => (tenths === null ? null : round1(tenths / 10));
+
+  /**
+   * Jeux évalués, les plus récemment notés d'abord.
+   * `reviewed=1` : uniquement les jeux ayant au moins un avis ; `limit` : nombre maximal.
+   */
+  app.get("/", async (request): Promise<{ games: GameSummary[] }> => {
+    const { reviewed, limit } = parseInput(listQuery, request.query);
+    const { query, lastActivity, reviewCount } = gameStats(request.user?.id ?? null);
+    if (reviewed) query.having(sql`${reviewCount} > 0`);
+    query.orderBy(desc(lastActivity), games.title);
+    if (limit) query.limit(limit);
+    const rows = await query;
+
+    // Dernier avis de chaque jeu (pseudo, note, date).
+    const ids = rows.map((r) => r.game.id);
+    const last =
+      ids.length === 0
+        ? []
+        : await db
+            .selectDistinctOn([reviews.gameId], {
+              gameId: reviews.gameId,
+              totalTenths: reviews.totalTenths,
+              updatedAt: reviews.updatedAt,
+              user: { id: users.id, username: users.username, avatar: users.avatar },
+            })
+            .from(reviews)
+            .innerJoin(users, eq(users.id, reviews.userId))
+            .where(inArray(reviews.gameId, ids))
+            .orderBy(reviews.gameId, desc(reviews.updatedAt));
+    const lastByGame = new Map(last.map((l) => [l.gameId, l]));
 
     return {
-      games: rows.map((r) => ({
-        id: r.id,
-        title: r.title,
-        reviewCount: r.reviewCount,
-        average: r.averageTenths === null ? null : round1(r.averageTenths / 10),
-        lastActivityAt: new Date(r.lastActivityAt).toISOString(),
-        reviewedByMe: r.reviewedByMe,
-      })),
+      games: rows.map((r) => {
+        const l = lastByGame.get(r.game.id);
+        return {
+          id: r.game.id,
+          ...gameInfo(r.game),
+          reviewCount: r.reviewCount,
+          average: average(r.averageTenths),
+          lastActivityAt: new Date(r.lastActivityAt).toISOString(),
+          reviewedByMe: r.reviewedByMe,
+          lastReview: l
+            ? {
+                user: toPublicUser(l.user),
+                total: l.totalTenths / 10,
+                at: l.updatedAt.toISOString(),
+              }
+            : null,
+        };
+      }),
     };
   });
 
-  /** Ajoute un jeu, ou renvoie celui qui porte déjà ce titre. */
+  /** Catalogue RAWG : recherche par titre (ou jeux populaires), avec les notes Kenpai existantes. */
+  app.get(
+    "/catalog",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request): Promise<{ games: CatalogGame[]; hasMore: boolean }> => {
+      const { q, page } = parseInput(catalogQuery, request.query);
+      const result = await rawg.search(q, page);
+      const rawgIds = result.games.map((g) => g.rawgId);
+      const known =
+        rawgIds.length === 0
+          ? []
+          : await gameStats(null).query.where(inArray(games.rawgId, rawgIds));
+      const byRawg = new Map(known.map((k) => [k.game.rawgId, k]));
+      return {
+        hasMore: result.hasMore,
+        games: result.games.map((g) => {
+          const k = byRawg.get(g.rawgId);
+          return {
+            ...g,
+            gameId: k?.game.id ?? null,
+            reviewCount: k?.reviewCount ?? 0,
+            average: k ? average(k.averageTenths) : null,
+          };
+        }),
+      };
+    },
+  );
+
+  /** Ajoute un jeu du catalogue (ou renvoie celui déjà présent). */
   app.post(
     "/",
     { preHandler: requireUser, config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
     async (request, reply) => {
       const me = currentUser(request);
-      const { title } = parseInput(gameInputSchema, request.body);
+      const { rawgId } = parseInput(gameInputSchema, request.body);
       const existing = async () => {
         const [game] = await db
           .select({ id: games.id, title: games.title })
           .from(games)
-          .where(eq(sql`lower(${games.title})`, title.toLowerCase()))
+          .where(eq(games.rawgId, rawgId))
           .limit(1);
         return game;
       };
 
       const found = await existing();
       if (found) return reply.status(200).send({ game: found, created: false });
-      try {
-        const [game] = await db
-          .insert(games)
-          .values({ title, createdBy: me.id })
-          .returning({ id: games.id, title: games.title });
-        return reply.status(201).send({ game, created: true });
-      } catch (error) {
-        if (uniqueViolation(error) === null) throw error;
-        return reply.status(200).send({ game: await existing(), created: false });
-      }
+      const info = await rawg.game(rawgId);
+      const [game] = await db
+        .insert(games)
+        .values({
+          rawgId,
+          title: info.title,
+          coverUrl: info.cover,
+          released: info.released,
+          platforms: info.platforms,
+          genres: info.genres,
+          createdBy: me.id,
+        })
+        .onConflictDoNothing({ target: games.rawgId })
+        .returning({ id: games.id, title: games.title });
+      if (game) return reply.status(201).send({ game, created: true });
+      // Ajouté au même moment par quelqu'un d'autre.
+      return reply.status(200).send({ game: await existing(), created: false });
     },
   );
 
@@ -133,7 +238,7 @@ export const reviewRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { 
     }
 
     return {
-      game: { id: game.id, title: game.title, createdAt: game.createdAt.toISOString() },
+      game: { id: game.id, ...gameInfo(game), createdAt: game.createdAt.toISOString() },
       reviewCount: list.length,
       average: list.length > 0 ? round1(list.reduce((s, r) => s + r.total, 0) / list.length) : null,
       criteriaAverages,
