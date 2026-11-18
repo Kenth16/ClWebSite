@@ -42,6 +42,18 @@
   --sidebar-accent: #e4dac6;
   --sidebar-border: #ddd2bb;
 
+  /* Éléments et caractéristiques (simulateur Dofus) */
+  --el-neutral: #7d7a72;
+  --el-earth: #9a6a2c;
+  --el-fire: #c8472d;
+  --el-water: #2f72b8;
+  --el-air: #3c8c4c;
+  --el-life: #c23b52;
+  --el-wisdom: #7655b3;
+  --el-ap: #2f72b8;
+  --el-mp: #3c8c4c;
+  --el-power: #b08a1e;
+
   --glow-1: #c9ddd433;
   --glow-2: #e8d5a840;
   --star: transparent;
@@ -73,6 +85,17 @@
   --sidebar-muted: #8f8d9b;
   --sidebar-accent: #1b1f2b;
   --sidebar-border: #20242f;
+
+  --el-neutral: #b3afa5;
+  --el-earth: #d3a35f;
+  --el-fire: #f0805f;
+  --el-water: #6fb0f0;
+  --el-air: #7fcf8a;
+  --el-life: #f07a8c;
+  --el-wisdom: #b39af0;
+  --el-ap: #6fb0f0;
+  --el-mp: #7fcf8a;
+  --el-power: #e6c45a;
 
   --glow-1: #8fc4b314;
   --glow-2: #d2b36b10;
@@ -107,6 +130,16 @@
   --color-sidebar-muted: var(--sidebar-muted);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
+  --color-el-neutral: var(--el-neutral);
+  --color-el-earth: var(--el-earth);
+  --color-el-fire: var(--el-fire);
+  --color-el-water: var(--el-water);
+  --color-el-air: var(--el-air);
+  --color-el-life: var(--el-life);
+  --color-el-wisdom: var(--el-wisdom);
+  --color-el-ap: var(--el-ap);
+  --color-el-mp: var(--el-mp);
+  --color-el-power: var(--el-power);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

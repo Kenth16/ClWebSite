@@ -4,6 +4,7 @@ import {
   Calculator,
   Castle,
   Crown,
+  Egg,
   Earth,
   Feather,
   Flag,
@@ -15,6 +16,7 @@ import {
   Puzzle,
   Pyramid,
   ScrollText,
+  Shield,
   Sparkles,
   Swords,
   ThumbsDown,
@@ -46,6 +48,8 @@ export const icons: Record<IconKey, LucideIcon> = {
   general: Sparkles,
   friends: Users,
   reviews: ThumbsDown,
+  dofus: Egg,
+  equipment: Shield,
   profile: UserRound,
 };
 

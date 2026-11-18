@@ -13,6 +13,8 @@ import { authRoutes } from "./modules/auth/routes";
 import { userRoutes } from "./modules/users/routes";
 import { friendRoutes } from "./modules/friends/routes";
 import { reviewRoutes } from "./modules/reviews/routes";
+import { DofusClient } from "./modules/dofus/client";
+import { dofusRoutes } from "./modules/dofus/routes";
 import { healthRoutes } from "./routes/health";
 
 export interface AppDeps {
@@ -22,6 +24,8 @@ export interface AppDeps {
   pingDatabase: () => Promise<boolean>;
   /** Tentatives de connexion / inscription par minute et par IP (10 par défaut). */
   authRateLimit?: number;
+  /** Accès aux données Dofus (remplaçable dans les tests). */
+  dofus?: DofusClient;
 }
 
 /**
@@ -77,6 +81,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(userRoutes, { prefix: "/api/users", db: deps.db });
   await app.register(friendRoutes, { prefix: "/api/friends", db: deps.db });
   await app.register(reviewRoutes, { prefix: "/api/games", db: deps.db });
+  await app.register(dofusRoutes, {
+    prefix: "/api/dofus",
+    client: deps.dofus ?? new DofusClient(),
+  });
 
   return app;
 }

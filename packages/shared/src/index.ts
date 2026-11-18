@@ -8,3 +8,4 @@ export * from "./avatars";
 export * from "./health";
 export * from "./friends";
 export * from "./reviews";
+export * from "./dofus";

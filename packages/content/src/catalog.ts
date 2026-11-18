@@ -29,6 +29,8 @@ export type IconKey =
   | "general"
   | "friends"
   | "reviews"
+  | "dofus"
+  | "equipment"
   | "profile";
 
 /**
@@ -241,6 +243,22 @@ export const catalog: CatalogEntry[] = [
         description: "Un mélange de toutes les disciplines.",
         icon: "general",
         status: "in-progress",
+      },
+    ],
+  },
+  {
+    slug: "dofus",
+    title: "Dofus",
+    description: "Outils pour préparer vos personnages Dofus.",
+    icon: "dofus",
+    status: "available",
+    children: [
+      {
+        slug: "simulateur",
+        title: "Simulateur de stuff",
+        description: "Composez un équipement et calculez les caractéristiques du personnage.",
+        icon: "equipment",
+        status: "available",
       },
     ],
   },
