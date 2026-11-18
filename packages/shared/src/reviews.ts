@@ -167,6 +167,17 @@ export interface GameSummary extends GameInfo {
   lastReview: { user: PublicUser; total: number; at: string } | null;
 }
 
+/** Un avis récent, avec le jeu concerné (accueil : « Derniers avis de la commu »). */
+export interface LatestReview {
+  id: string;
+  game: GameInfo & { id: string };
+  user: PublicUser;
+  total: number;
+  comment: string;
+  /** Date de publication ou de dernière modification. */
+  at: string;
+}
+
 export interface GameReview {
   id: string;
   user: PublicUser;

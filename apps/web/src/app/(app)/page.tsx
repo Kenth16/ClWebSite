@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { LatestReviews } from "@/components/reviews/latest-reviews";
 import { getCurrentUser, serverApi } from "@/lib/session";
 import { cn } from "@/lib/utils";
-import type { GameSummary, SessionUser } from "@kenpai/shared";
+import type { LatestReview, SessionUser } from "@kenpai/shared";
 
 /** Disposition « mosaïque » : deux grandes cartes, puis trois plus petites. */
 const layout = [
@@ -23,13 +23,13 @@ const layout = [
 export default async function HomePage() {
   const [user, latest] = await Promise.all([
     getCurrentUser(),
-    serverApi<{ games: GameSummary[] }>("/games?reviewed=1&limit=4"),
+    serverApi<{ reviews: LatestReview[] }>("/games/reviews/latest?limit=8"),
   ]);
   return (
     <PageContainer className="space-y-12">
       <Hero user={user} />
 
-      <LatestReviews games={latest?.games ?? []} />
+      <LatestReviews reviews={latest?.reviews ?? []} />
 
       <section aria-labelledby="disciplines">
         <SectionTitle id="disciplines">Disciplines</SectionTitle>

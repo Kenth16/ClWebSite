@@ -4,6 +4,7 @@ import {
   REVIEW_CRITERIA,
   type GameDetail,
   type GameSummary,
+  type LatestReview,
   type ReviewScores,
 } from "@kenpai/shared";
 import { buildApp } from "../../app";
@@ -151,6 +152,28 @@ describe.skipIf(!available)("avis désastreux", () => {
       reviewCount: 1,
     });
     expect(games.find((g) => g.rawgId === 3)).toMatchObject({ gameId: null, average: null });
+  });
+
+  it("liste les derniers avis, un par membre, même sur un même jeu", async () => {
+    const alice = await register("Alice");
+    const bob = await register("Bob");
+    const a = (await addGame(alice, "Jeu raté")).json().game;
+    const b = (await addGame(alice, "Jeu")).json().game;
+    await rate(alice, a.id, all(2), "Bof.");
+    await rate(bob, a.id, all(6));
+    await rate(alice, b.id, all(9));
+    const res = await app.inject({ method: "GET", url: "/api/games/reviews/latest?limit=8" });
+    expect(res.statusCode).toBe(200);
+    const list: LatestReview[] = res.json().reviews;
+    expect(list.map((r) => [r.user.username, r.game.title, r.total])).toEqual([
+      ["Alice", "Jeu", 90],
+      ["Bob", "Jeu raté", 60],
+      ["Alice", "Jeu raté", 20],
+    ]);
+    expect(list[2]!.comment).toBe("Bof.");
+    expect(list[0]!.user).not.toHaveProperty("email");
+    const limited = await app.inject({ method: "GET", url: "/api/games/reviews/latest?limit=2" });
+    expect(limited.json().reviews).toHaveLength(2);
   });
 
   it("liste les derniers jeux notés avec le dernier avis", async () => {

@@ -12,6 +12,7 @@ import {
   type GameInfo,
   type GameReview,
   type GameSummary,
+  type LatestReview,
   type ReviewScores,
 } from "@kenpai/shared";
 import { games, reviews, users, type Database, type Game } from "@kenpai/db";
@@ -27,6 +28,9 @@ const listQuery = z.object({
     .optional()
     .transform((v) => v === "1"),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+const latestQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional().default(8),
 });
 const catalogQuery = z.object({
   q: z.string().trim().max(100).optional().default(""),
@@ -134,6 +138,32 @@ export const reviewRoutes: FastifyPluginAsync<{ db: Database; rawg: RawgClient }
             : null,
         };
       }),
+    };
+  });
+
+  /** Derniers avis publiés, tous jeux confondus (un même jeu peut apparaître plusieurs fois). */
+  app.get("/reviews/latest", async (request): Promise<{ reviews: LatestReview[] }> => {
+    const { limit } = parseInput(latestQuery, request.query);
+    const rows = await db
+      .select({
+        review: reviews,
+        game: games,
+        user: { id: users.id, username: users.username, avatar: users.avatar },
+      })
+      .from(reviews)
+      .innerJoin(games, eq(games.id, reviews.gameId))
+      .innerJoin(users, eq(users.id, reviews.userId))
+      .orderBy(desc(reviews.updatedAt))
+      .limit(limit);
+    return {
+      reviews: rows.map(({ review, game, user }) => ({
+        id: review.id,
+        game: { id: game.id, ...gameInfo(game) },
+        user: toPublicUser(user),
+        total: review.totalTenths / 10,
+        comment: review.comment,
+        at: review.updatedAt.toISOString(),
+      })),
     };
   });
 
