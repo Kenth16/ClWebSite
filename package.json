@@ -10,7 +10,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "concurrently -n api,web -c yellow,cyan \"npm run dev -w @kenpai/api\" \"npm run dev -w @kenpai/web\"",
+    "dev": "node scripts/dev.mjs",
     "dev:web": "npm run dev -w @kenpai/web",
     "dev:api": "npm run dev -w @kenpai/api",
     "build": "npm run build -w @kenpai/api && npm run build -w @kenpai/web",
@@ -24,7 +24,6 @@
   },
   "devDependencies": {
     "@types/node": "^22",
-    "concurrently": "^9.2.1",
     "eslint": "^9.39.0",
     "eslint-config-next": "^16.4.6",
     "prettier": "^3.6.2",
