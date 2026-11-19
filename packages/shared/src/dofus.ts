@@ -256,6 +256,14 @@ export const SCROLL_MAX = 100;
 export const EXO_STATS = ["ap", "mp", "range"] as const satisfies readonly StatKey[];
 export type ExoStat = (typeof EXO_STATS)[number];
 export type Exos = Record<ExoStat, boolean>;
+/** Ligne de forgemagie ajoutée à la main : une caractéristique et sa valeur. */
+export interface ForgemagicLine {
+  stat: StatKey;
+  value: number;
+}
+export const FORGEMAGIC_LINES_MAX = 40;
+export const FORGEMAGIC_VALUE_MAX = 9999;
+
 /** Valeurs maximales en jeu (jet théorique) : 12 PA, 6 PM, 6 PO. */
 export const STAT_CAPS: Record<ExoStat, number> = { ap: 12, mp: 6, range: 6 };
 
@@ -270,6 +278,8 @@ export interface CharacterInput {
   sets: DofusSet[];
   /** Exos PA, PM, PO appliqués par forgemagie. */
   exos?: Partial<Exos>;
+  /** Caractéristiques ajoutées librement par forgemagie. */
+  forgemagic?: ForgemagicLine[];
 }
 
 /** Coût en points de caractéristique pour atteindre `value` dans une caractéristique. */
@@ -346,6 +356,7 @@ export function computeCharacter(input: CharacterInput): CharacterResult {
   for (const item of input.items) addEffects(fromGear, item.effects);
   const activeSets = activeSetBonuses(input.items, input.sets);
   for (const bonus of activeSets) addEffects(fromGear, bonus.effects);
+  for (const line of input.forgemagic ?? []) fromGear[line.stat] += line.value;
 
   const totals = { ...fromGear };
   for (const c of CHARACTERISTICS) {
@@ -467,6 +478,16 @@ export const dofusBuildSchema = z.object({
   exos: z
     .object({ ap: z.boolean(), mp: z.boolean(), range: z.boolean() })
     .default({ ap: false, mp: false, range: false }),
+  /** Caractéristiques ajoutées librement par forgemagie. */
+  forgemagic: z
+    .array(
+      z.object({
+        stat: z.enum(Object.keys(STATS) as [StatKey, ...StatKey[]], "Caractéristique inconnue."),
+        value: z.number().int().min(-FORGEMAGIC_VALUE_MAX).max(FORGEMAGIC_VALUE_MAX),
+      }),
+    )
+    .max(FORGEMAGIC_LINES_MAX)
+    .default([]),
   /** Classe choisie pour le calcul des dégâts (identifiant DofusDB), ou null. */
   breedId: z.number().int().positive().nullable().default(null),
   /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */

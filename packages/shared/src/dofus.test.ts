@@ -117,6 +117,27 @@ describe("simulateur Dofus", () => {
     expect([capped.ap, capped.mp, capped.range]).toEqual([12, 6, 6]);
   });
 
+  it("ajoute les lignes de forgemagie libres", () => {
+    const r = computeCharacter({
+      level: 200,
+      base: zero,
+      scrolls: zero,
+      items: [],
+      sets: [],
+      forgemagic: [
+        { stat: "strength", value: 30 },
+        { stat: "fireRes", value: 7 },
+        { stat: "lock", value: -5 },
+        { stat: "ap", value: 9 },
+      ],
+    });
+    expect(r.totals.strength).toBe(30);
+    expect(r.totals.fireRes).toBe(7);
+    expect(r.totals.lock).toBe(-5 + 0);
+    expect(r.totals.pods).toBe(1000 + 5 * 30);
+    expect(r.totals.ap).toBe(12); // plafonné
+  });
+
   it("active les bonus de panoplie selon le nombre d'objets", () => {
     const set: DofusSet = {
       id: 7,

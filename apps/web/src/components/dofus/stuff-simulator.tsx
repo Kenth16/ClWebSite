@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   AlertTriangle,
   Hammer,
-  X,
   Copy,
   LogIn,
   Save,
@@ -39,6 +38,7 @@ import {
   type DofusItem,
   type DofusSet,
   type ExoStat,
+  type ForgemagicLine,
   type Exos,
   type SlotId,
   type StatKey,
@@ -59,6 +59,7 @@ import { cn } from "@/lib/utils";
 import { ItemIcon, ItemPicker } from "./item-picker";
 import { CharacterImage } from "./character-image";
 import { DamageCalculator } from "./damage-calculator";
+import { Forgemagic } from "./forgemagic";
 import { SavedBuildsDialog } from "./saved-builds";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
@@ -79,6 +80,8 @@ interface Stuff {
   breedId: number | null;
   /** Exos de forgemagie PA, PM, PO. */
   exos: Exos;
+  /** Caractéristiques ajoutées librement par forgemagie. */
+  forgemagic: ForgemagicLine[];
 }
 
 const STORAGE_KEY = "kenpai:dofus:stuff";
@@ -95,6 +98,7 @@ const newStuff = (): Stuff => ({
   image: null,
   breedId: null,
   exos: { ap: false, mp: false, range: false },
+  forgemagic: [],
 });
 
 /** Contenu envoyé à l'API pour enregistrer le stuff. */
@@ -109,6 +113,7 @@ function toBuildData(stuff: Stuff): DofusBuildData {
     image: stuff.image,
     breedId: stuff.breedId,
     exos: stuff.exos,
+    forgemagic: stuff.forgemagic,
   };
 }
 
@@ -125,6 +130,8 @@ function loadStuff(): Stuff {
 // ─── Présentation des caractéristiques ─────────────────────────────────────
 
 const SUMMARY: StatKey[] = ["initiative", "critical", "summons", "heals", "prospecting"];
+/** Caractéristiques élémentaires : affichées avec la Puissance incluse. */
+const ELEMENTAL: StatKey[] = ["strength", "intelligence", "chance", "agility"];
 const SECONDARY: StatKey[] = [
   "dodge",
   "lock",
@@ -382,6 +389,7 @@ export function StuffSimulator({
     items: equipped.map((e) => e.item),
     sets: setIds.map((id) => sets[id]).filter((s): s is DofusSet => !!s),
     exos: stuff.exos,
+    forgemagic: stuff.forgemagic,
   });
   const { totals } = result;
 
@@ -712,7 +720,24 @@ export function StuffSimulator({
                 {CHARACTERISTICS.map((c) => (
                   <tr key={c}>
                     <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone(c))}>
-                      {totals[c]}
+                      {ELEMENTAL.includes(c) ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              tabIndex={0}
+                              className="cursor-help border-b border-dotted border-current outline-none"
+                            >
+                              {totals[c] + totals.power}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="text-xs">
+                            {totals[c]} {STATS[c]} + {totals.power} {STATS.power} ={" "}
+                            <strong>{totals[c] + totals.power}</strong>
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        totals[c]
+                      )}
                     </td>
                     <td className="py-0.5 pr-1">
                       <span className="flex min-w-0 items-center gap-1.5">
@@ -908,34 +933,12 @@ export function StuffSimulator({
             <StatGrid keys={RESISTANCE_PCT} totals={totals} />
           </Panel>
           <Panel title="Forgemagie" icon={Hammer}>
-            {EXO_STATS.some((k) => stuff.exos[k]) ? (
-              <ul className="grid gap-1.5 text-sm">
-                {EXO_STATS.filter((k) => stuff.exos[k]).map((k) => (
-                  <li
-                    key={k}
-                    className="flex items-center gap-2 rounded-md border border-gold/40 bg-gold-soft px-2 py-1.5"
-                  >
-                    <StatIcon stat={k} className={cn(k !== "range" && "fill-current")} />
-                    <span className="flex-1">
-                      Exo {STATS[k]} <span className="font-semibold text-gold">+1</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => toggleExo(k)}
-                      aria-label={`Retirer l'exo ${STATS[k]}`}
-                      title="Retirer"
-                      className="rounded p-0.5 text-muted-foreground hover:text-destructive"
-                    >
-                      <X className="size-4" aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Aucun exo. Cliquez sur PA, PM ou PO dans le Résumé pour simuler un exo.
-              </p>
-            )}
+            <Forgemagic
+              exos={stuff.exos}
+              onToggleExo={toggleExo}
+              lines={stuff.forgemagic}
+              onLinesChange={(forgemagic) => update({ forgemagic })}
+            />
           </Panel>
         </div>
       </div>

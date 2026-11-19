@@ -25,6 +25,10 @@ const build = {
   image: null,
   breedId: 9,
   exos: { ap: true, mp: false, range: false },
+  forgemagic: [
+    { stat: "strength", value: 30 },
+    { stat: "fireRes", value: -5 },
+  ],
 };
 /** Petite image PNG valide (1 × 1 pixel). */
 const PNG =
@@ -144,6 +148,8 @@ describe.skipIf(!available)("stuffs Dofus enregistrés", () => {
       { ...build, scrolls: { ...zero, vitality: 101 } },
       { ...build, slots: { chaussettes: 1 } },
       { ...build, notes: "x".repeat(256) },
+      { ...build, forgemagic: [{ stat: "chaussettes", value: 1 }] },
+      { ...build, forgemagic: [{ stat: "strength", value: 10_000 }] },
       { ...build, image: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" },
       { ...build, image: "https://exemple.com/perso.png" },
       { ...build, image: `data:image/png;base64,${"A".repeat(150_000)}` },
