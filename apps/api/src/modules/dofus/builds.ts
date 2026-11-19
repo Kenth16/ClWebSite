@@ -21,6 +21,7 @@ function summary(row: DofusBuildRow): DofusBuildSummary {
     name: row.name,
     level: row.level,
     itemCount: Object.keys(data.slots ?? {}).length,
+    tags: data.tags ?? { elements: [], classes: [] },
     updatedAt: row.updatedAt.toISOString(),
   };
 }

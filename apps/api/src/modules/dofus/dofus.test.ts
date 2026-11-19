@@ -13,7 +13,7 @@ const coiffe = {
   ankama_id: 8009,
   name: "Coiffe du Koalak",
   level: 60,
-  type: { name: "Chapeau" },
+  type: { name: "Chapeau", id: 27 },
   image_urls: { icon: "https://exemple/8009.png" },
   parent_set: { id: 46, name: "Panoplie du Koalak" },
   conditions: {
@@ -66,9 +66,50 @@ function fakeFetch() {
         status,
         headers: { "content-type": "application/json" },
       });
-    if (url.includes("/items/equipment/search")) return json([{ ankama_id: 8009 }]);
+    if (url.includes("/items/equipment/all")) {
+      const light = { ...coiffe, conditions: undefined, parent_set: undefined };
+      const ocre = {
+        ankama_id: 7754,
+        name: "Dofus Ocre",
+        level: 160,
+        type: { name: "Dofus" },
+        effects: [
+          {
+            int_minimum: 1,
+            int_maximum: 0,
+            ignore_int_max: true,
+            type: { name: "PA" },
+            formatted: "1 PA",
+          },
+          {
+            int_minimum: 0,
+            int_maximum: 0,
+            type: { name: "-special spell-", is_meta: true },
+            formatted: "{{spell,8394,1::Jaune Ocre}} :\n• Le porteur gagne 1 PA.",
+          },
+        ],
+      };
+      return json({ items: decodeURIComponent(url).includes("=dofus,") ? [ocre] : [light] });
+    }
+    if (url.includes("/items/equipment/7754")) return json({ error: "indisponible" }, 500);
     if (url.includes("/items/equipment/8009")) return json(coiffe);
     if (url.includes("/items/equipment?")) return json({ items: [coiffe] });
+    if (url.includes("/sets/search")) {
+      if (url.includes("query=zzz")) return json({ error: "No results found." }, 404);
+      return json([
+        { ankama_id: 46, name: "Panoplie du Koalak", level: 61, items: 7 },
+        {
+          ankama_id: 9,
+          name: "Panoplie Cosmétique",
+          level: 1,
+          items: 2,
+          contains_cosmetics_only: true,
+        },
+      ]);
+    }
+    if (url.includes("/sets?")) {
+      return json({ sets: [{ ankama_id: 46, name: "Panoplie du Koalak", level: 61, items: 7 }] });
+    }
     if (url.includes("/sets/46")) {
       return json({
         ankama_id: 46,
@@ -131,17 +172,93 @@ describe("données Dofus", () => {
 
   it("recherche par emplacement, avec le filtre de types et de niveau, et met en cache", async () => {
     const { instance, calls } = await app();
-    const url = "/api/dofus/items?family=hat&q=koalak&maxLevel=131";
+    const url = "/api/dofus/items?family=hat&q=KOALAK&maxLevel=131";
     const res = await instance.inject({ method: "GET", url });
     expect(res.statusCode).toBe(200);
-    expect(res.json().items[0].name).toBe("Coiffe du Koalak");
-    const search = decodeURIComponent(calls[0]!);
-    expect(search).toContain("filter[type.name_id]=hat");
-    expect(search).toContain("filter[max_level]=131");
+    expect(res.json().items[0]).toMatchObject({ name: "Coiffe du Koalak", set: { id: 46 } });
+    expect(decodeURIComponent(calls[0]!)).toContain(
+      "/items/equipment/all?filter[type.name_id]=hat",
+    );
     const before = calls.length;
     await instance.inject({ method: "GET", url });
     expect(calls.length).toBe(before);
+    // Niveau maximum trop bas : rien.
+    const low = await instance.inject({
+      method: "GET",
+      url: "/api/dofus/items?family=hat&maxLevel=59",
+    });
+    expect(low.json().items).toEqual([]);
     await instance.close();
+  });
+
+  it("filtre par caractéristiques minimales", async () => {
+    const { instance } = await app();
+    const ok = await instance.inject({
+      method: "GET",
+      url: "/api/dofus/items?family=hat&stats=vitality:50,mp:1",
+    });
+    expect(ok.json().items).toHaveLength(1);
+    const none = await instance.inject({
+      method: "GET",
+      url: "/api/dofus/items?family=hat&stats=vitality:61",
+    });
+    expect(none.json().items).toEqual([]);
+    for (const bad of ["chaussettes:5", "vitality", "vitality:abc"]) {
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/dofus/items?family=hat&stats=${bad}`,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it("propose les montures dans les familiers, par sous-catégorie", async () => {
+    const { instance, calls } = await app();
+    await instance.inject({ method: "GET", url: "/api/dofus/items?family=pet&subtype=seemyool" });
+    const allCalls = () => calls.filter((c) => c.includes("/all")).map(decodeURIComponent);
+    expect(allCalls().at(-1)).toContain("filter[type.name_id]=seemyool");
+    await instance.inject({ method: "GET", url: "/api/dofus/items?family=pet" });
+    expect(allCalls().at(-1)).toContain(
+      "filter[type.name_id]=dragoturkey,pet,petsmount,rhineetle,seemyool",
+    );
+    const bad = await instance.inject({
+      method: "GET",
+      url: "/api/dofus/items?family=hat&subtype=seemyool",
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it("recherche des panoplies et renvoie leurs objets avec leur emplacement", async () => {
+    const { instance, calls } = await app();
+    const found = await instance.inject({
+      method: "GET",
+      url: "/api/dofus/sets?q=koalak&maxLevel=100",
+    });
+    expect(found.json().sets).toEqual([
+      { id: 46, name: "Panoplie du Koalak", level: 61, itemCount: 7 },
+    ]);
+    expect(decodeURIComponent(calls.at(-1)!)).toContain("filter[max_highest_equipment_level]=100");
+    const none = await instance.inject({ method: "GET", url: "/api/dofus/sets?q=zzz" });
+    expect(none.json().sets).toEqual([]);
+    const top = await instance.inject({ method: "GET", url: "/api/dofus/sets" });
+    expect(top.json().sets).toHaveLength(1);
+
+    const res = await instance.inject({ method: "GET", url: "/api/dofus/sets/46/items" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.set.id).toBe(46);
+    // 8003 est introuvable : seule la coiffe est renvoyée.
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ id: 8009, family: "hat" });
+  });
+
+  it("retire la ligne de balise des objets à sort spécial et garde la description", async () => {
+    const { instance } = await app();
+    const res = await instance.inject({ method: "GET", url: "/api/dofus/items?family=dofus" });
+    expect(res.json().items[0].effects).toEqual([
+      { stat: "ap", value: 1, text: "1 PA" },
+      { stat: null, value: 0, text: "• Le porteur gagne 1 PA." },
+    ]);
   });
 
   it("renvoie les bonus de panoplie et refuse un emplacement inconnu", async () => {

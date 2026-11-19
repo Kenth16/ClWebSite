@@ -1,10 +1,19 @@
-import { SLOT_TYPES, type DofusItem, type DofusSet, type SlotFamily } from "@kenpai/shared";
+import {
+  itemMatchesStatFilters,
+  slotTypes,
+  type DofusItem,
+  type DofusSet,
+  type DofusSetSummary,
+  type ItemStatFilter,
+  type SlotFamily,
+} from "@kenpai/shared";
 import { HttpError } from "../../lib/errors";
 import { normalizeItem, normalizeSet, type RawItem, type RawSet } from "./normalize";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 3000;
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 40;
+const SET_PAGE_SIZE = 30;
 
 export interface DofusClientOptions {
   baseUrl?: string;
@@ -65,26 +74,92 @@ export class DofusClient {
     return normalizeSet(await this.get<RawSet>(`/sets/${id}`));
   }
 
-  /**
-   * Objets d'une famille d'emplacement, filtrés par nom et par niveau maximum.
-   * Sans recherche : les objets du plus haut niveau autorisé.
-   */
-  async searchItems(family: SlotFamily, query: string, maxLevel: number): Promise<DofusItem[]> {
+  /** Panoplies par nom (ou les plus hautes sans recherche), jusqu'à un niveau donné. */
+  async searchSets(query: string, maxLevel: number): Promise<DofusSetSummary[]> {
+    type RawSummary = {
+      ankama_id: number;
+      name: string;
+      level: number;
+      items: number;
+      contains_cosmetics_only?: boolean;
+    };
     const params = new URLSearchParams({
-      "filter[type.name_id]": SLOT_TYPES[family].join(","),
-      "filter[max_level]": String(maxLevel),
+      "filter[max_highest_equipment_level]": String(maxLevel),
     });
-    if (query) {
-      params.set("query", query);
-      params.set("limit", String(PAGE_SIZE));
-      const hits = await this.get<{ ankama_id: number }[]>(`/items/equipment/search?${params}`);
-      // La recherche ne renvoie pas les effets : on charge chaque fiche (mise en cache).
-      return Promise.all(hits.map((h) => this.item(h.ankama_id)));
+    let raw: RawSummary[];
+    if (query.trim()) {
+      params.set("query", query.trim());
+      params.set("limit", String(SET_PAGE_SIZE));
+      try {
+        raw = await this.get<RawSummary[]>(`/sets/search?${params}`);
+      } catch (e) {
+        // L'API répond 404 quand rien ne correspond.
+        if (e instanceof HttpError && e.statusCode === 404) return [];
+        throw e;
+      }
+    } else {
+      params.set("page[size]", String(SET_PAGE_SIZE));
+      params.set("sort[level]", "desc");
+      raw = (await this.get<{ sets: RawSummary[] }>(`/sets?${params}`)).sets;
     }
-    params.set("page[size]", String(PAGE_SIZE));
-    params.set("sort[level]", "desc");
-    params.set("fields[item]", "effects,conditions,parent_set");
-    const page = await this.get<{ items: RawItem[] }>(`/items/equipment?${params}`);
+    return raw
+      .filter((s) => !s.contains_cosmetics_only)
+      .map((s) => ({ id: s.ankama_id, name: s.name, level: s.level, itemCount: s.items }));
+  }
+
+  /** Une panoplie et la fiche de chacun de ses objets. */
+  async setWithItems(id: number): Promise<{ set: DofusSet; items: DofusItem[] }> {
+    const set = await this.set(id);
+    // Un objet introuvable n'empêche pas d'équiper le reste de la panoplie.
+    const results = await Promise.allSettled(set.itemIds.map((itemId) => this.item(itemId)));
+    const items = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    return { set, items };
+  }
+
+  /** Tous les objets de ces types (liste légère : effets, sans conditions ni panoplie). */
+  private async allOfTypes(types: readonly string[]): Promise<DofusItem[]> {
+    const params = new URLSearchParams({ "filter[type.name_id]": [...types].sort().join(",") });
+    const page = await this.get<{ items: RawItem[] }>(`/items/equipment/all?${params}`);
     return page.items.map(normalizeItem);
   }
+
+  /**
+   * Objets d'une famille d'emplacement (ou d'une sous-catégorie), filtrés par
+   * nom, niveau maximum et caractéristiques minimales. Sans recherche : les
+   * objets du plus haut niveau autorisé.
+   */
+  async searchItems(
+    family: SlotFamily,
+    query: string,
+    maxLevel: number,
+    options: { subtype?: string; stats?: readonly ItemStatFilter[] } = {},
+  ): Promise<DofusItem[]> {
+    const all = await this.allOfTypes(slotTypes(family, options.subtype));
+    const q = fold(query.trim());
+    const matches = all
+      .filter(
+        (item) =>
+          item.level <= maxLevel &&
+          (!q || fold(item.name).includes(q)) &&
+          itemMatchesStatFilters(item, options.stats ?? []),
+      )
+      .sort((a, b) => {
+        if (q) {
+          const rank = Number(!fold(a.name).startsWith(q)) - Number(!fold(b.name).startsWith(q));
+          if (rank !== 0) return rank;
+        }
+        return b.level - a.level || a.name.localeCompare(b.name, "fr");
+      })
+      .slice(0, PAGE_SIZE);
+    // La liste complète n'a ni conditions ni panoplie : on charge chaque fiche (mise en cache).
+    return Promise.all(matches.map((m) => this.item(m.id).catch(() => m)));
+  }
+}
+
+/** Minuscules sans accents, pour comparer les noms. */
+function fold(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
 }

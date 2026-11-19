@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   activeSetBonuses,
+  buildMatchesTags,
+  placeItems,
+  spellMatchesElements,
+  toggleElementTag,
   availablePoints,
   characteristicCost,
   computeCharacter,
@@ -276,5 +280,72 @@ describe("calcul des dégâts des sorts", () => {
     const r = computeSpellDamage({ ...totals, critical: 90 }, spellGradeAt(glacee, 200)!);
     expect(r.criticalChance).toBe(100);
     expect(r.average).toBe(81); // (75 + 87) / 2
+  });
+});
+
+describe("tags des stuffs", () => {
+  it("rend « multi » exclusif", () => {
+    expect(toggleElementTag(["fire"], "air")).toEqual(["fire", "air"]);
+    expect(toggleElementTag(["fire", "air"], "multi")).toEqual(["multi"]);
+    expect(toggleElementTag(["multi"], "water")).toEqual(["water"]);
+    expect(toggleElementTag(["fire", "air"], "fire")).toEqual(["air"]);
+  });
+
+  it("filtre les stuffs par élément et par classe", () => {
+    const tags = { elements: ["earth" as const, "air" as const], classes: [9] };
+    expect(buildMatchesTags(tags, { elements: [], classes: [] })).toBe(true);
+    expect(buildMatchesTags(tags, { elements: ["air"], classes: [] })).toBe(true);
+    expect(buildMatchesTags(tags, { elements: ["fire"], classes: [] })).toBe(false);
+    expect(buildMatchesTags(tags, { elements: ["earth"], classes: [9] })).toBe(true);
+    expect(buildMatchesTags(tags, { elements: ["earth"], classes: [1] })).toBe(false);
+  });
+
+  it("filtre les sorts par élément", () => {
+    const grade = (elements: ("fire" | "air" | "earth")[]) => ({
+      grade: 1,
+      minLevel: 1,
+      apCost: 3,
+      minRange: 1,
+      range: 5,
+      criticalChance: 5,
+      lines: elements.map((element) => ({ element, kind: "damage" as const, min: 1, max: 2 })),
+      criticalLines: [],
+    });
+    const spell = (elements: ("fire" | "air" | "earth")[]): DofusSpell => ({
+      id: 1,
+      name: "Sort",
+      icon: null,
+      variant: 1,
+      grades: [grade(elements)],
+    });
+    expect(spellMatchesElements(spell(["fire"]), [])).toBe(true);
+    expect(spellMatchesElements(spell(["fire"]), ["fire", "air"])).toBe(true);
+    expect(spellMatchesElements(spell(["earth"]), ["fire", "air"])).toBe(false);
+    expect(spellMatchesElements(spell(["fire", "air"]), ["multi"])).toBe(true);
+    expect(spellMatchesElements(spell(["fire"]), ["multi"])).toBe(false);
+    expect(spellMatchesElements(spell([]), ["fire"])).toBe(false);
+  });
+});
+
+describe("ajout d'une panoplie", () => {
+  it("remplit les emplacements libres puis remplace", () => {
+    const set = [
+      { id: 1, family: "hat" as const },
+      { id: 2, family: "ring" as const },
+      { id: 3, family: "ring" as const },
+      { id: 4, family: null },
+    ];
+    expect(placeItems({}, set)).toEqual({ hat: 1, ring1: 2, ring2: 3 });
+    // Coiffe déjà portée remplacée, un anneau déjà présent conservé.
+    expect(placeItems({ hat: 99, ring1: 2, ring2: 50 }, set)).toEqual({
+      hat: 1,
+      ring1: 2,
+      ring2: 3,
+    });
+    // Un seul anneau à placer, les deux emplacements pris : le premier est remplacé.
+    expect(placeItems({ ring1: 7, ring2: 8 }, [{ id: 2, family: "ring" }])).toEqual({
+      ring1: 2,
+      ring2: 8,
+    });
   });
 });

@@ -2,7 +2,12 @@
 
 import * as React from "react";
 import { FolderOpen, Loader2, Trash2 } from "lucide-react";
-import type { DofusBuild, DofusBuildSummary } from "@kenpai/shared";
+import {
+  buildMatchesTags,
+  type BuildTags,
+  type DofusBuild,
+  type DofusBuildSummary,
+} from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { BuildTagFilter, BuildTagIcons, useBreeds } from "./tags";
 
 const dateFormat = new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short" });
 
@@ -31,6 +37,9 @@ export function SavedBuildsDialog({
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [confirming, setConfirming] = React.useState<string | null>(null);
+  const [filter, setFilter] = React.useState<BuildTags>({ elements: [], classes: [] });
+  const { breeds } = useBreeds(open);
+  const shown = builds?.filter((b) => buildMatchesTags(b.tags, filter));
 
   function onOpenChange(next: boolean) {
     setOpen(next);
@@ -97,66 +106,82 @@ export function SavedBuildsDialog({
             Aucun stuff enregistré pour l&apos;instant.
           </p>
         ) : (
-          <ul className="grid max-h-[60svh] gap-2 overflow-y-auto">
-            {builds?.map((b) => (
-              <li
-                key={b.id}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg border bg-card/70 p-3",
-                  b.id === currentId && "border-primary",
-                )}
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {b.name}
-                    {b.id === currentId && (
-                      <span className="ml-2 text-xs font-normal text-primary">ouvert</span>
-                    )}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Niveau {b.level} · {b.itemCount} objets ·{" "}
-                    {dateFormat.format(new Date(b.updatedAt))}
-                  </p>
-                </div>
-                {confirming === b.id ? (
-                  <>
-                    <Button
-                      size="sm"
-                      className="bg-destructive text-background hover:bg-destructive/90"
-                      disabled={busy !== null}
-                      onClick={() => void remove(b.id)}
-                    >
-                      Supprimer
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>
-                      Annuler
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy !== null}
-                      onClick={() => void openBuild(b.id)}
-                    >
-                      {busy === b.id ? "…" : "Ouvrir"}
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      aria-label={`Supprimer ${b.name}`}
-                      title="Supprimer"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => setConfirming(b.id)}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </Button>
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+          <>
+            {builds && builds.length > 1 && (
+              <BuildTagFilter
+                available={builds.map((b) => b.tags)}
+                filter={filter}
+                onChange={setFilter}
+                breeds={breeds}
+              />
+            )}
+            {shown?.length === 0 && (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                Aucun stuff ne correspond à ces tags.
+              </p>
+            )}
+            <ul className="grid max-h-[50svh] gap-2 overflow-y-auto">
+              {shown?.map((b) => (
+                <li
+                  key={b.id}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg border bg-card/70 p-3",
+                    b.id === currentId && "border-primary",
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="flex min-w-0 items-center gap-2 font-medium">
+                      <span className="truncate">{b.name}</span>
+                      <BuildTagIcons tags={b.tags} breeds={breeds} className="shrink-0" />
+                      {b.id === currentId && (
+                        <span className="text-xs font-normal text-primary">ouvert</span>
+                      )}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Niveau {b.level} · {b.itemCount} objets ·{" "}
+                      {dateFormat.format(new Date(b.updatedAt))}
+                    </p>
+                  </div>
+                  {confirming === b.id ? (
+                    <>
+                      <Button
+                        size="sm"
+                        className="bg-destructive text-background hover:bg-destructive/90"
+                        disabled={busy !== null}
+                        onClick={() => void remove(b.id)}
+                      >
+                        Supprimer
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>
+                        Annuler
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy !== null}
+                        onClick={() => void openBuild(b.id)}
+                      >
+                        {busy === b.id ? "…" : "Ouvrir"}
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={`Supprimer ${b.name}`}
+                        title="Supprimer"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => setConfirming(b.id)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </DialogContent>
     </Dialog>

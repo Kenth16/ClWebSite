@@ -31,6 +31,7 @@ import {
   computeCharacter,
   conditionsMet,
   conditionsText,
+  placeItems,
   type Characteristic,
   type DofusBuild,
   type DofusBuildData,
@@ -39,6 +40,7 @@ import {
   type DofusSet,
   type ExoStat,
   type ForgemagicLine,
+  type BuildTags,
   type Exos,
   type SlotId,
   type StatKey,
@@ -61,6 +63,8 @@ import { CharacterImage } from "./character-image";
 import { DamageCalculator } from "./damage-calculator";
 import { Forgemagic } from "./forgemagic";
 import { SavedBuildsDialog } from "./saved-builds";
+import { BuildTagsEditor } from "./tags";
+import { SetPicker } from "./set-picker";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
 // ─── Stuff enregistré dans le navigateur ───────────────────────────────────
@@ -82,6 +86,8 @@ interface Stuff {
   exos: Exos;
   /** Caractéristiques ajoutées librement par forgemagie. */
   forgemagic: ForgemagicLine[];
+  /** Tags (éléments, classes) pour retrouver le stuff. */
+  tags: BuildTags;
 }
 
 const STORAGE_KEY = "kenpai:dofus:stuff";
@@ -99,6 +105,7 @@ const newStuff = (): Stuff => ({
   breedId: null,
   exos: { ap: false, mp: false, range: false },
   forgemagic: [],
+  tags: { elements: [], classes: [] },
 });
 
 /** Contenu envoyé à l'API pour enregistrer le stuff. */
@@ -114,6 +121,7 @@ function toBuildData(stuff: Stuff): DofusBuildData {
     breedId: stuff.breedId,
     exos: stuff.exos,
     forgemagic: stuff.forgemagic,
+    tags: stuff.tags,
   };
 }
 
@@ -532,6 +540,10 @@ export function StuffSimulator({
             className={cn("w-24 tabular-nums", NO_SPIN)}
           />
         </label>
+        <div className="grid gap-1 text-sm font-medium">
+          Tags
+          <BuildTagsEditor tags={stuff.tags} onChange={(tags) => update({ tags })} />
+        </div>
         <p className="pb-2 text-sm text-muted-foreground">
           Niveau du stuff : <strong className="text-foreground">{result.gearLevel || "—"}</strong>
         </p>
@@ -838,7 +850,22 @@ export function StuffSimulator({
                       level={level}
                       breedId={stuff.breedId}
                       onBreedChange={(breedId) => update({ breedId })}
+                      elementTags={stuff.tags.elements}
                     />
+                    <div className="mt-1.5">
+                      <SetPicker
+                        level={level}
+                        equippedIds={equippedIds}
+                        onEquip={(set, picked) => {
+                          setItems((m) => ({
+                            ...m,
+                            ...Object.fromEntries(picked.map((i) => [i.id, i])),
+                          }));
+                          setSets((m) => ({ ...m, [set.id]: set }));
+                          setStuff((s) => ({ ...s, slots: placeItems(s.slots, picked) }));
+                        }}
+                      />
+                    </div>
                   </div>
                   {activeGroups.length > 0 && (
                     <ul className="mt-1 grid gap-1.5">

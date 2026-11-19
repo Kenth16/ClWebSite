@@ -114,7 +114,11 @@ export function statTone(stat: StatKey) {
 /** Ligne d'effet avec son icône (bonus de panoplie, effets d'objet). */
 export function EffectRow({ effect, className }: { effect: DofusEffect; className?: string }) {
   if (!effect.stat) {
-    return <li className={cn("text-muted-foreground italic", className)}>{effect.text}</li>;
+    return (
+      <li className={cn("whitespace-pre-line text-muted-foreground italic", className)}>
+        {effect.text}
+      </li>
+    );
   }
   return (
     <li className={cn("flex items-center gap-1.5", className)}>

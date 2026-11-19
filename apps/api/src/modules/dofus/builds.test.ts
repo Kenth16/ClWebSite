@@ -24,6 +24,7 @@ const build = {
   notes: "PvM",
   image: null,
   breedId: 9,
+  tags: { elements: ["earth", "air"], classes: [9] },
   exos: { ap: true, mp: false, range: false },
   forgemagic: [
     { stat: "strength", value: 30 },
@@ -150,6 +151,10 @@ describe.skipIf(!available)("stuffs Dofus enregistrés", () => {
       { ...build, notes: "x".repeat(256) },
       { ...build, forgemagic: [{ stat: "chaussettes", value: 1 }] },
       { ...build, forgemagic: [{ stat: "strength", value: 10_000 }] },
+      { ...build, tags: { elements: ["multi", "fire"], classes: [] } },
+      { ...build, tags: { elements: ["lumière"], classes: [] } },
+      { ...build, tags: { elements: ["fire", "fire"], classes: [] } },
+      { ...build, tags: { elements: [], classes: [0] } },
       { ...build, image: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" },
       { ...build, image: "https://exemple.com/perso.png" },
       { ...build, image: `data:image/png;base64,${"A".repeat(150_000)}` },

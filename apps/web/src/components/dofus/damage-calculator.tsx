@@ -7,7 +7,8 @@ import {
   STATS,
   computeSpellDamage,
   spellGradeAt,
-  type DofusBreed,
+  spellMatchesElements,
+  type BuildElementTag,
   type DofusSpell,
   type StatKey,
   type StatTotals,
@@ -23,6 +24,7 @@ import {
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { StatIcon, statTone } from "./stat-icon";
+import { ElementTagPicker, RemoteIcon, useBreeds } from "./tags";
 
 const KEY_STATS: StatKey[] = [
   "power",
@@ -38,12 +40,8 @@ const KEY_STATS: StatKey[] = [
   "rangedDamagePct",
 ];
 
-/** Icône d'une image distante (DofusDB), ou un carré neutre. */
-function RemoteIcon({ src, className }: { src: string | null; className?: string }) {
-  if (!src) return <span className={cn("rounded-md bg-muted", className)} aria-hidden="true" />;
-  // eslint-disable-next-line @next/next/no-img-element -- images hébergées par DofusDB
-  return <img src={src} alt="" loading="lazy" className={cn("object-contain", className)} />;
-}
+const fmtRange = (r: { min: number; max: number }) =>
+  r.min === r.max ? String(r.min) : `${r.min} – ${r.max}`;
 
 function SpellCard({
   spell,
@@ -58,24 +56,20 @@ function SpellCard({
   const firstLevel = spell.grades[0]?.minLevel ?? 1;
   const damage = grade && grade.lines.length > 0 ? computeSpellDamage(totals, grade) : null;
 
+  const range = grade
+    ? grade.minRange === grade.range
+      ? grade.range
+      : `${grade.minRange}–${grade.range}`
+    : null;
+
   return (
-    <li className="flex gap-3 rounded-lg border bg-card/70 p-3">
-      <RemoteIcon src={spell.icon} className="size-11 shrink-0" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-2">
-          <p className="font-medium leading-tight">{spell.name}</p>
-          {damage && (
-            <p className="shrink-0 text-right leading-tight">
-              <span className="font-serif text-lg font-bold tabular-nums">{damage.average}</span>
-              <span className="block text-[0.7rem] text-muted-foreground">moy. / lancer</span>
-            </p>
-          )}
-        </div>
-        {!grade ? (
-          <p className="mt-1 text-xs text-muted-foreground">Disponible au niveau {firstLevel}.</p>
-        ) : (
-          <>
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+    <li className="rounded-lg border bg-card/70 p-2.5">
+      <div className="flex items-center gap-2.5">
+        <RemoteIcon src={spell.icon} className="size-9 shrink-0" />
+        <div className="min-w-0 flex-1 leading-tight">
+          <p className="truncate font-medium">{spell.name}</p>
+          {grade ? (
+            <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
               <span className="flex items-center gap-0.5">
                 <Star className="size-3 fill-el-ap text-el-ap" aria-hidden="true" />
                 {grade.apCost} PA
@@ -86,54 +80,69 @@ function SpellCard({
                 ) : (
                   <Crosshair className="size-3" aria-hidden="true" />
                 )}
-                PO{" "}
-                {grade.minRange === grade.range ? grade.range : `${grade.minRange}–${grade.range}`}
+                PO {range}
               </span>
               {damage && <span>{damage.criticalChance} % crit.</span>}
             </p>
-            {damage && (
-              <table className="mt-2 w-full text-sm">
-                <thead className="sr-only">
-                  <tr>
-                    <th>Élément</th>
-                    <th>Normal</th>
-                    <th>Critique</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {damage.lines.map((line, i) => (
-                    <tr key={i}>
-                      <td className="py-0.5 pr-2">
-                        <span className="flex items-center gap-1.5">
-                          <StatIcon stat={ELEMENTS[line.element].damage} className="size-3.5" />
-                          <span className={statTone(ELEMENTS[line.element].damage)}>
-                            {ELEMENTS[line.element].label}
-                          </span>
-                          {line.kind === "steal" && (
-                            <span className="text-xs text-muted-foreground">(vol)</span>
-                          )}
-                        </span>
-                      </td>
-                      <td className="py-0.5 text-right font-semibold tabular-nums">
-                        {line.normal.min === line.normal.max
-                          ? line.normal.min
-                          : `${line.normal.min} – ${line.normal.max}`}
-                      </td>
-                      <td className="py-0.5 pl-3 text-right tabular-nums text-el-fire">
-                        {line.critical
-                          ? line.critical.min === line.critical.max
-                            ? line.critical.min
-                            : `${line.critical.min} – ${line.critical.max}`
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </>
+          ) : (
+            <p className="text-xs text-muted-foreground">Disponible au niveau {firstLevel}.</p>
+          )}
+        </div>
+        {damage && (
+          <p className="shrink-0 text-right leading-none" title="Dégâts moyens par lancer">
+            <span className="font-serif text-lg font-bold tabular-nums">{damage.average}</span>
+            <span className="block text-[0.65rem] text-muted-foreground">moy.</span>
+          </p>
         )}
       </div>
+      {damage && (
+        <table className="mt-1.5 w-full text-sm">
+          <thead className="sr-only">
+            <tr>
+              <th>Élément</th>
+              <th>Normal</th>
+              <th>Critique</th>
+            </tr>
+          </thead>
+          <tbody>
+            {damage.lines.map((line, i) => {
+              const element = ELEMENTS[line.element];
+              return (
+                <tr key={i}>
+                  <td className="py-0.5">
+                    <span className="flex items-center gap-1.5">
+                      <StatIcon stat={element.damage} className="size-3.5" />
+                      <span className="sr-only">{element.label}</span>
+                      <span className={cn("font-semibold tabular-nums", statTone(element.damage))}>
+                        {fmtRange(line.normal)}
+                      </span>
+                      {line.kind === "steal" && (
+                        <span className="text-xs text-muted-foreground">(vol)</span>
+                      )}
+                    </span>
+                  </td>
+                  <td className="py-0.5 pl-3">
+                    {line.critical ? (
+                      <span
+                        className="flex items-center justify-end gap-1.5"
+                        title="Dégâts en coup critique"
+                      >
+                        <StatIcon stat="critical" className="size-3.5" />
+                        <span className="sr-only">Critique :</span>
+                        <span className={cn("tabular-nums", statTone(element.damage))}>
+                          {fmtRange(line.critical)}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="block text-right text-muted-foreground">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </li>
   );
 }
@@ -147,26 +156,21 @@ export function DamageCalculator({
   level,
   breedId,
   onBreedChange,
+  elementTags,
 }: {
   totals: StatTotals;
   level: number;
   breedId: number | null;
   onBreedChange: (id: number) => void;
+  /** Éléments du stuff : filtre proposé par défaut à l'ouverture. */
+  elementTags: BuildElementTag[];
 }) {
   const [open, setOpen] = React.useState(false);
-  const [breeds, setBreeds] = React.useState<DofusBreed[] | null>(null);
+  const { breeds, error: breedsError } = useBreeds(open);
+  const [elements, setElements] = React.useState<BuildElementTag[]>([]);
   const [spells, setSpells] = React.useState<Record<number, DofusSpell[]>>({});
   const [error, setError] = React.useState<string | null>(null);
   const [onlyDamage, setOnlyDamage] = React.useState(true);
-
-  React.useEffect(() => {
-    if (!open || breeds) return;
-    apiFetch<{ classes: DofusBreed[] }>("/dofus/classes")
-      .then(({ classes }) => setBreeds(classes))
-      .catch((e: unknown) =>
-        setError(e instanceof ApiError ? e.message : "Classes indisponibles."),
-      );
-  }, [open, breeds]);
 
   React.useEffect(() => {
     if (!open || breedId === null || spells[breedId]) return;
@@ -176,11 +180,22 @@ export function DamageCalculator({
   }, [open, breedId, spells]);
 
   const list = breedId !== null ? spells[breedId] : undefined;
-  const shown = list?.filter((s) => !onlyDamage || s.grades.some((g) => g.lines.length > 0));
+  const shown = list?.filter(
+    (s) =>
+      (!onlyDamage || s.grades.some((g) => g.lines.length > 0)) &&
+      spellMatchesElements(s, elements),
+  );
   const breed = breeds?.find((b) => b.id === breedId);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // À l'ouverture, le filtre reprend les éléments choisis pour le stuff.
+        if (next) setElements(elementTags);
+        setOpen(next);
+      }}
+    >
       <DialogTrigger asChild>
         <Button className="w-full">
           <Calculator aria-hidden="true" />
@@ -195,10 +210,12 @@ export function DamageCalculator({
           </DialogDescription>
         </div>
 
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {(error ?? breedsError) && (
+          <p className="text-sm text-destructive">{error ?? breedsError}</p>
+        )}
 
         {/* Choix de la classe */}
-        {breeds === null && !error ? (
+        {breeds === null && !breedsError ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             Chargement des classes…
@@ -243,6 +260,12 @@ export function DamageCalculator({
           ))}
         </ul>
 
+        {/* Filtre par élément */}
+        <fieldset>
+          <legend className="mb-2 text-sm font-medium">Éléments</legend>
+          <ElementTagPicker value={elements} onChange={setElements} />
+        </fieldset>
+
         <div className="-mx-2 max-h-[55svh] min-h-40 overflow-y-auto px-2">
           {breedId === null ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
@@ -253,8 +276,12 @@ export function DamageCalculator({
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               Chargement des sorts…
             </p>
+          ) : shown.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              Aucun sort ne correspond à ce filtre.
+            </p>
           ) : (
-            <ul className="grid gap-2 md:grid-cols-2">
+            <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {shown.map((spell) => (
                 <SpellCard key={spell.id} spell={spell} level={level} totals={totals} />
               ))}

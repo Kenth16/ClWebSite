@@ -180,6 +180,16 @@ export interface DofusItem {
   effects: DofusEffect[];
   conditions: DofusConditionTree | null;
   set: { id: number; name: string } | null;
+  /** Famille d'emplacement de l'objet (d'après son type), si connue. */
+  family?: SlotFamily | null;
+}
+
+/** Panoplie dans une liste de recherche. */
+export interface DofusSetSummary {
+  id: number;
+  name: string;
+  level: number;
+  itemCount: number;
 }
 
 export interface DofusSet {
@@ -216,11 +226,64 @@ export const SLOT_TYPES = {
   boots: ["boots"],
   weapon: WEAPON_TYPES,
   shield: ["shield"],
-  pet: ["pet", "petsmount"],
+  pet: ["pet", "petsmount", "dragoturkey", "seemyool", "rhineetle"],
   dofus: ["dofus", "trophy", "prysmaradite"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type SlotFamily = keyof typeof SLOT_TYPES;
+
+/** Sous-catégories proposées dans le sélecteur d'objets (types DofusDude). */
+export const SLOT_SUBTYPES: Partial<
+  Record<SlotFamily, readonly { id: string; label: string; types: readonly string[] }[]>
+> = {
+  pet: [
+    { id: "pets", label: "Familiers", types: ["pet", "petsmount"] },
+    { id: "dragoturkey", label: "Dragodindes", types: ["dragoturkey"] },
+    { id: "seemyool", label: "Muldos", types: ["seemyool"] },
+    { id: "rhineetle", label: "Volkornes", types: ["rhineetle"] },
+  ],
+};
+
+/** Types DofusDude d'une famille, restreints à une sous-catégorie si elle existe. */
+export function slotTypes(family: SlotFamily, subtype?: string): readonly string[] {
+  const sub = subtype ? SLOT_SUBTYPES[family]?.find((s) => s.id === subtype) : undefined;
+  return sub ? sub.types : SLOT_TYPES[family];
+}
+
+/** Filtre « au moins N de cette caractéristique » dans le sélecteur d'objets. */
+export interface ItemStatFilter {
+  stat: StatKey;
+  min: number;
+}
+export const ITEM_STAT_FILTERS_MAX = 6;
+
+/** Valeur (jet max) d'une caractéristique sur un objet. */
+export function itemStatValue(item: Pick<DofusItem, "effects">, stat: StatKey): number {
+  return item.effects.reduce((sum, e) => (e.stat === stat ? sum + e.value : sum), 0);
+}
+
+export function itemMatchesStatFilters(
+  item: Pick<DofusItem, "effects">,
+  filters: readonly ItemStatFilter[],
+): boolean {
+  return filters.every((f) => itemStatValue(item, f.stat) >= f.min);
+}
+
+/** Encodage des filtres dans l'URL : « strength:50,vitality:100 ». */
+export function formatStatFilters(filters: readonly ItemStatFilter[]): string {
+  return filters.map((f) => `${f.stat}:${f.min}`).join(",");
+}
+
+export function parseStatFilters(raw: string): ItemStatFilter[] | null {
+  if (!raw) return [];
+  const filters: ItemStatFilter[] = [];
+  for (const part of raw.split(",")) {
+    const match = /^([a-zA-Z]+):(-?\d{1,5})$/.exec(part);
+    if (!match || !(match[1]! in STATS)) return null;
+    filters.push({ stat: match[1] as StatKey, min: Number(match[2]) });
+  }
+  return filters.length > ITEM_STAT_FILTERS_MAX ? null : filters;
+}
 
 export const SLOTS = [
   { id: "amulet", family: "amulet", label: "Amulette" },
@@ -242,6 +305,63 @@ export const SLOTS = [
 ] as const satisfies readonly { id: string; family: SlotFamily; label: string }[];
 
 export type SlotId = (typeof SLOTS)[number]["id"];
+
+/** Identifiant de type Ankama (DofusDude) → famille d'emplacement. */
+export const ITEM_TYPE_FAMILY: Record<number, SlotFamily> = {
+  33: "amulet",
+  27: "hat",
+  17: "ring",
+  43: "cloak",
+  58: "belt",
+  45: "boots",
+  87: "shield",
+  1: "pet",
+  180: "pet",
+  247: "pet",
+  242: "pet",
+  245: "pet",
+  177: "dofus",
+  23: "dofus",
+  124: "dofus",
+  73: "weapon",
+  39: "weapon",
+  93: "weapon",
+  42: "weapon",
+  111: "weapon",
+  199: "weapon",
+  163: "weapon",
+  52: "weapon",
+  125: "weapon",
+  80: "weapon",
+  65: "weapon",
+};
+
+/**
+ * Place des objets (une panoplie) dans les emplacements : d'abord les
+ * emplacements libres de leur famille, sinon remplace le premier qui n'a pas
+ * déjà reçu un objet de ce lot. Les objets sans famille sont ignorés.
+ */
+export function placeItems(
+  slots: Partial<Record<SlotId, number>>,
+  items: readonly Pick<DofusItem, "id" | "family">[],
+): Partial<Record<SlotId, number>> {
+  const next = { ...slots };
+  const filled = new Set<SlotId>();
+  for (const item of items) {
+    if (!item.family) continue;
+    const candidates = SLOTS.filter((s) => s.family === item.family).map((s) => s.id);
+    if (candidates.some((id) => next[id] === item.id && !filled.has(id))) {
+      filled.add(candidates.find((id) => next[id] === item.id)!);
+      continue;
+    }
+    const target =
+      candidates.find((id) => next[id] === undefined) ?? candidates.find((id) => !filled.has(id));
+    if (!target) continue;
+    next[target] = item.id;
+    filled.add(target);
+  }
+  return next;
+}
 
 export function isSlotFamily(value: string): value is SlotFamily {
   return value in SLOT_TYPES;
@@ -462,6 +582,50 @@ const characteristicValues = (max: number) =>
 
 const SLOT_IDS = SLOTS.map((s) => s.id) as [SlotId, ...SlotId[]];
 
+/** Éléments qu'on peut associer à un stuff (« multi » exclut les autres). */
+export const BUILD_ELEMENT_TAGS = ["earth", "fire", "water", "air", "multi"] as const;
+export type BuildElementTag = (typeof BUILD_ELEMENT_TAGS)[number];
+export const BUILD_ELEMENT_LABELS: Record<BuildElementTag, string> = {
+  earth: "Terre",
+  fire: "Feu",
+  water: "Eau",
+  air: "Air",
+  multi: "Multi",
+};
+/** Nombre maximal de classes associées à un stuff. */
+export const BUILD_CLASS_TAGS_MAX = 20;
+
+/**
+ * Sélection d'éléments : « multi » est exclusif (le choisir retire les autres,
+ * choisir un élément retire « multi »).
+ */
+export function toggleElementTag(
+  current: readonly BuildElementTag[],
+  tag: BuildElementTag,
+): BuildElementTag[] {
+  if (current.includes(tag)) return current.filter((t) => t !== tag);
+  if (tag === "multi") return ["multi"];
+  return [...current.filter((t) => t !== "multi"), tag];
+}
+
+export const buildTagsSchema = z
+  .object({
+    elements: z
+      .array(z.enum(BUILD_ELEMENT_TAGS, "Élément inconnu."))
+      .max(BUILD_ELEMENT_TAGS.length)
+      .refine((l) => new Set(l).size === l.length, "Élément en double.")
+      .refine(
+        (l) => !l.includes("multi") || l.length === 1,
+        "« Multi » exclut les autres éléments.",
+      ),
+    classes: z
+      .array(z.number().int().positive())
+      .max(BUILD_CLASS_TAGS_MAX)
+      .refine((l) => new Set(l).size === l.length, "Classe en double."),
+  })
+  .default({ elements: [], classes: [] });
+export type BuildTags = z.infer<typeof buildTagsSchema>;
+
 /** Contenu d'un stuff : ce que le simulateur enregistre. */
 export const dofusBuildSchema = z.object({
   name: z
@@ -488,6 +652,8 @@ export const dofusBuildSchema = z.object({
     )
     .max(FORGEMAGIC_LINES_MAX)
     .default([]),
+  /** Tags choisis par le joueur pour retrouver ses stuffs. */
+  tags: buildTagsSchema,
   /** Classe choisie pour le calcul des dégâts (identifiant DofusDB), ou null. */
   breedId: z.number().int().positive().nullable().default(null),
   /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */
@@ -505,7 +671,17 @@ export interface DofusBuildSummary {
   name: string;
   level: number;
   itemCount: number;
+  tags: BuildTags;
   updatedAt: string;
+}
+
+/** Un stuff correspond au filtre s'il a l'un des éléments et l'une des classes choisis. */
+export function buildMatchesTags(tags: BuildTags, filter: BuildTags): boolean {
+  const elementOk =
+    filter.elements.length === 0 || filter.elements.some((e) => tags.elements.includes(e));
+  const classOk =
+    filter.classes.length === 0 || filter.classes.some((c) => tags.classes.includes(c));
+  return elementOk && classOk;
 }
 
 export interface DofusBuild extends DofusBuildSummary {
@@ -562,6 +738,25 @@ export interface DofusSpell {
   /** Les deux sorts d'une même paire de variantes partagent ce numéro. */
   variant: number;
   grades: SpellGrade[];
+}
+
+/** Éléments de dégâts distincts d'un sort (tous grades confondus). */
+export function spellElements(spell: DofusSpell): DofusElement[] {
+  return [...new Set(spell.grades.flatMap((g) => g.lines.map((l) => l.element)))];
+}
+
+/**
+ * Filtre des sorts par élément : un sort passe s'il frappe dans l'un des
+ * éléments choisis ; « multi » garde les sorts à plusieurs éléments.
+ */
+export function spellMatchesElements(
+  spell: DofusSpell,
+  filter: readonly BuildElementTag[],
+): boolean {
+  if (filter.length === 0) return true;
+  const elements = spellElements(spell);
+  if (filter.includes("multi")) return elements.length > 1;
+  return elements.some((e) => (filter as readonly string[]).includes(e));
 }
 
 /** Grade d'un sort utilisable au niveau donné (le plus élevé), ou null. */

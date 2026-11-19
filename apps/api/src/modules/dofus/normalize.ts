@@ -1,4 +1,5 @@
 import {
+  ITEM_TYPE_FAMILY,
   statFromEffectName,
   type DofusCondition,
   type DofusConditionTree,
@@ -27,7 +28,7 @@ export interface RawItem {
   ankama_id: number;
   name: string;
   level: number;
-  type: { name: string };
+  type: { name: string; id?: number };
   image_urls?: { icon?: string; sd?: string };
   effects?: RawEffect[] | null;
   conditions?: RawConditionNode | null;
@@ -48,10 +49,22 @@ function effectValue(e: RawEffect): number {
   return e.int_minimum < 0 ? Math.min(e.int_minimum, e.int_maximum) : e.int_maximum;
 }
 
+/**
+ * Texte d'un effet sans les lignes de balises internes (« {{spell,8394,1::Jaune Ocre}} : »)
+ * des objets à sort spécial : seule la description est gardée.
+ */
+export function cleanEffectText(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/\{\{[^}]*\}\}/.test(line))
+    .join("\n")
+    .trim();
+}
+
 export function normalizeEffect(e: RawEffect): DofusEffect {
   // Les effets « actifs » sont les lignes de dégâts des armes : affichées, non additionnées.
   const stat = e.type.is_active || e.type.is_meta ? null : statFromEffectName(e.type.name);
-  return { stat, value: effectValue(e), text: e.formatted };
+  return { stat, value: effectValue(e), text: cleanEffectText(e.formatted) };
 }
 
 const OPERATORS = new Set([">", "<", "=", "!"]);
@@ -84,9 +97,10 @@ export function normalizeItem(raw: RawItem): DofusItem {
     level: raw.level,
     type: raw.type.name,
     icon: raw.image_urls?.icon ?? null,
-    effects: (raw.effects ?? []).map(normalizeEffect),
+    effects: (raw.effects ?? []).map(normalizeEffect).filter((e) => e.text !== ""),
     conditions: normalizeConditions(raw.conditions),
     set: raw.parent_set ? { id: raw.parent_set.id, name: raw.parent_set.name } : null,
+    family: raw.type.id !== undefined ? (ITEM_TYPE_FAMILY[raw.type.id] ?? null) : null,
   };
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, X } from "lucide-react";
+import { Pencil, Plus, X } from "lucide-react";
 import {
   EXO_STATS,
   FORGEMAGIC_LINES_MAX,
@@ -13,23 +13,45 @@ import {
   type StatKey,
 } from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { StatIcon } from "./stat-icon";
 
-/** Caractéristiques proposées, regroupées comme dans le simulateur. */
+/** Caractéristiques proposées dans la fenêtre, regroupées comme en jeu. */
 const GROUPS: { label: string; stats: StatKey[] }[] = [
   {
     label: "Caractéristiques",
-    stats: ["vitality", "wisdom", "strength", "intelligence", "chance", "agility", "power"],
-  },
-  {
-    label: "Résumé",
-    stats: ["ap", "mp", "range", "initiative", "critical", "summons", "heals", "prospecting"],
+    stats: [
+      "ap",
+      "mp",
+      "range",
+      "vitality",
+      "wisdom",
+      "strength",
+      "intelligence",
+      "chance",
+      "agility",
+      "power",
+      "initiative",
+      "critical",
+      "summons",
+      "heals",
+      "prospecting",
+      "dodge",
+      "lock",
+    ],
   },
   {
     label: "Secondaires",
-    stats: ["dodge", "lock", "apParry", "apReduction", "mpParry", "mpReduction", "pods"],
+    stats: ["apParry", "apReduction", "mpParry", "mpReduction", "pods"],
   },
   {
     label: "Dommages",
@@ -70,11 +92,136 @@ const GROUPS: { label: string; stats: StatKey[] }[] = [
     ],
   },
 ];
+const ORDER = GROUPS.flatMap((g) => g.stats);
 
 const NO_SPIN =
   "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
 
-/** Contenu de l'encadré Forgemagie : exos PA/PM/PO et caractéristiques ajoutées à la main. */
+type Draft = Partial<Record<StatKey, string>>;
+
+const toDraft = (lines: ForgemagicLine[]): Draft =>
+  Object.fromEntries(lines.map((l) => [l.stat, String(l.value)]));
+
+/** Fenêtre de forgemagie : une case par caractéristique, comme en jeu. */
+function ForgemagicDialog({
+  lines,
+  onLinesChange,
+}: {
+  lines: ForgemagicLine[];
+  onLinesChange: (lines: ForgemagicLine[]) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState<Draft>({});
+  const [error, setError] = React.useState<string | null>(null);
+
+  function onOpenChange(next: boolean) {
+    if (next) {
+      setDraft(toDraft(lines));
+      setError(null);
+    }
+    setOpen(next);
+  }
+
+  function apply(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const next: ForgemagicLine[] = [];
+    for (const stat of ORDER) {
+      const raw = draft[stat]?.trim();
+      if (!raw) continue;
+      const value = Math.trunc(Number(raw));
+      if (!Number.isFinite(value)) {
+        setError(`Valeur invalide pour ${STATS[stat]}.`);
+        return;
+      }
+      if (Math.abs(value) > FORGEMAGIC_VALUE_MAX) {
+        setError(
+          `${STATS[stat]} : la valeur doit rester entre −${FORGEMAGIC_VALUE_MAX} et ${FORGEMAGIC_VALUE_MAX}.`,
+        );
+        return;
+      }
+      if (value !== 0) next.push({ stat, value });
+    }
+    if (next.length > FORGEMAGIC_LINES_MAX) {
+      setError(`Au plus ${FORGEMAGIC_LINES_MAX} caractéristiques différentes.`);
+      return;
+    }
+    onLinesChange(next);
+    setOpen(false);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          {lines.length > 0 ? <Pencil aria-hidden="true" /> : <Plus aria-hidden="true" />}
+          {lines.length > 0 ? "Modifier" : "Ajouter"}
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl gap-4">
+        <div>
+          <DialogTitle>Forgemagie</DialogTitle>
+          <DialogDescription className="mt-1">
+            Indiquez de combien améliorer chaque caractéristique (négatif pour un malus).
+          </DialogDescription>
+        </div>
+        <form onSubmit={apply} className="grid gap-4">
+          <div className="-mx-2 grid max-h-[60svh] gap-4 overflow-y-auto px-2">
+            {GROUPS.map((group) => (
+              <fieldset key={group.label}>
+                <legend className="mb-1.5 text-sm font-medium text-muted-foreground">
+                  {group.label}
+                </legend>
+                <div
+                  style={{ "--rows": Math.ceil(group.stats.length / 2) } as React.CSSProperties}
+                  className="grid gap-x-6 gap-y-1 sm:grid-flow-col sm:grid-cols-2 sm:grid-rows-[repeat(var(--rows),auto)]"
+                >
+                  {group.stats.map((stat) => {
+                    const value = Number(draft[stat] || 0);
+                    return (
+                      <label key={stat} className="flex items-center gap-2 text-sm">
+                        <Input
+                          type="number"
+                          inputMode="numeric"
+                          value={draft[stat] ?? ""}
+                          placeholder="0"
+                          onChange={(e) => setDraft((d) => ({ ...d, [stat]: e.target.value }))}
+                          className={cn(
+                            "h-7 w-16 shrink-0 px-2 text-right tabular-nums",
+                            NO_SPIN,
+                            value > 0 && "text-primary",
+                            value < 0 && "text-destructive",
+                          )}
+                        />
+                        <StatIcon stat={stat} />
+                        <span className="truncate">{STATS[stat]}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            ))}
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+            <Button type="button" variant="ghost" onClick={() => setDraft({})}>
+              Tout remettre à 0
+            </Button>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row">
+              <DialogClose asChild>
+                <Button type="button" variant="ghost">
+                  Annuler
+                </Button>
+              </DialogClose>
+              <Button type="submit">Valider</Button>
+            </div>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Contenu de l'encadré Forgemagie : exos PA/PM/PO et caractéristiques ajoutées. */
 export function Forgemagic({
   exos,
   onToggleExo,
@@ -86,39 +233,11 @@ export function Forgemagic({
   lines: ForgemagicLine[];
   onLinesChange: (lines: ForgemagicLine[]) => void;
 }) {
-  const [adding, setAdding] = React.useState(false);
-  const [stat, setStat] = React.useState<StatKey>("vitality");
-  const [value, setValue] = React.useState("");
-  const [error, setError] = React.useState<string | null>(null);
   const activeExos = EXO_STATS.filter((k) => exos[k]);
-
-  function add(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const n = Math.trunc(Number(value));
-    if (!value.trim() || !Number.isFinite(n) || n === 0) {
-      setError("Saisissez une valeur (négative pour un malus).");
-      return;
-    }
-    if (Math.abs(n) > FORGEMAGIC_VALUE_MAX) {
-      setError(`La valeur doit rester entre −${FORGEMAGIC_VALUE_MAX} et ${FORGEMAGIC_VALUE_MAX}.`);
-      return;
-    }
-    // Une même caractéristique ajoutée deux fois : les valeurs se cumulent.
-    const existing = lines.find((l) => l.stat === stat);
-    const next = existing
-      ? lines
-          .map((l) => (l.stat === stat ? { ...l, value: l.value + n } : l))
-          .filter((l) => l.value !== 0)
-      : [...lines, { stat, value: n }];
-    onLinesChange(next);
-    setValue("");
-    setError(null);
-    setAdding(false);
-  }
 
   return (
     <div className="grid gap-3">
-      {activeExos.length === 0 && lines.length === 0 && !adding && (
+      {activeExos.length === 0 && lines.length === 0 && (
         <p className="text-sm text-muted-foreground">
           Aucun bonus. Cliquez sur PA, PM ou PO dans le Résumé pour un exo, ou ajoutez des
           caractéristiques.
@@ -163,68 +282,7 @@ export function Forgemagic({
         </ul>
       )}
 
-      {adding ? (
-        <form onSubmit={add} className="grid gap-2 rounded-lg border bg-background/40 p-2.5">
-          <label className="grid gap-1 text-xs font-medium">
-            Caractéristique
-            <select
-              value={stat}
-              onChange={(e) => setStat(e.target.value as StatKey)}
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-            >
-              {GROUPS.map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.stats.map((k) => (
-                    <option key={k} value={k}>
-                      {STATS[k]}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1 text-xs font-medium">
-            Valeur
-            <Input
-              autoFocus
-              type="number"
-              inputMode="numeric"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="ex. 30 ou -10"
-              aria-invalid={error ? true : undefined}
-              className={cn("h-9 tabular-nums", NO_SPIN)}
-            />
-          </label>
-          {error && <p className="text-xs text-destructive">{error}</p>}
-          <div className="flex gap-2">
-            <Button type="submit" size="sm" className="flex-1">
-              Ajouter
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setAdding(false);
-                setError(null);
-              }}
-            >
-              Annuler
-            </Button>
-          </div>
-        </form>
-      ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={lines.length >= FORGEMAGIC_LINES_MAX}
-          onClick={() => setAdding(true)}
-        >
-          <Plus aria-hidden="true" />
-          Ajouter
-        </Button>
-      )}
+      <ForgemagicDialog lines={lines} onLinesChange={onLinesChange} />
     </div>
   );
 }
