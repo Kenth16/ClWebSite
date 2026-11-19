@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * Simulateur d'équipement Dofus : caractéristiques, emplacements et calcul
  * des statistiques finales d'un personnage. Logique pure, partagée entre
@@ -412,4 +414,58 @@ export function conditionsText(tree: DofusConditionTree | null): string {
     c.kind === "condition" ? conditionsText(c) : `(${conditionsText(c)})`,
   );
   return parts.join(tree.kind === "and" ? " et " : " ou ");
+}
+
+// ─── Stuffs enregistrés ────────────────────────────────────────────────────
+
+export const BUILD_NAME_MAX = 40;
+export const BUILD_NOTES_MAX = 255;
+/** Nombre maximal de stuffs enregistrés par membre. */
+export const BUILDS_PER_USER_MAX = 50;
+/** Image du personnage : côté maximal (px) et taille maximale encodée. */
+export const BUILD_IMAGE_SIZE = 360;
+export const BUILD_IMAGE_MAX_CHARS = 150_000;
+
+const characteristicValues = (max: number) =>
+  z.object(
+    Object.fromEntries(CHARACTERISTICS.map((c) => [c, z.number().int().min(0).max(max)])) as Record<
+      Characteristic,
+      z.ZodNumber
+    >,
+  );
+
+const SLOT_IDS = SLOTS.map((s) => s.id) as [SlotId, ...SlotId[]];
+
+/** Contenu d'un stuff : ce que le simulateur enregistre. */
+export const dofusBuildSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Donnez un nom à ce stuff.")
+    .max(BUILD_NAME_MAX, `Le nom doit contenir au plus ${BUILD_NAME_MAX} caractères.`),
+  level: z.number().int().min(1).max(LEVEL_MAX),
+  base: characteristicValues(995),
+  scrolls: characteristicValues(SCROLL_MAX),
+  slots: z.partialRecord(z.enum(SLOT_IDS), z.number().int().positive()),
+  notes: z.string().max(BUILD_NOTES_MAX).default(""),
+  /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */
+  image: z
+    .string()
+    .max(BUILD_IMAGE_MAX_CHARS, "Image trop lourde.")
+    .regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/, "Image invalide.")
+    .nullable()
+    .default(null),
+});
+export type DofusBuildData = z.infer<typeof dofusBuildSchema>;
+
+export interface DofusBuildSummary {
+  id: string;
+  name: string;
+  level: number;
+  itemCount: number;
+  updatedAt: string;
+}
+
+export interface DofusBuild extends DofusBuildSummary {
+  data: DofusBuildData;
 }

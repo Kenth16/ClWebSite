@@ -1,8 +1,12 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
+  Copy,
+  LogIn,
+  Save,
   Dumbbell,
   Heart,
   Layers,
@@ -25,6 +29,9 @@ import {
   conditionsMet,
   conditionsText,
   type Characteristic,
+  type DofusBuild,
+  type DofusBuildData,
+  type DofusBuildSummary,
   type DofusItem,
   type DofusSet,
   type SlotId,
@@ -41,20 +48,26 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { apiFetch } from "@/lib/api-client";
+import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ItemIcon, ItemPicker } from "./item-picker";
+import { CharacterImage } from "./character-image";
+import { SavedBuildsDialog } from "./saved-builds";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
 // ─── Stuff enregistré dans le navigateur ───────────────────────────────────
 
 interface Stuff {
+  /** Identifiant du stuff enregistré sur le compte, s'il l'a été. */
+  buildId?: string;
   name: string;
   level: number;
   base: Record<Characteristic, number>;
   scrolls: Record<Characteristic, number>;
   slots: Partial<Record<SlotId, number>>;
   notes: string;
+  /** Image du personnage (data URL réduite), ou null. */
+  image: string | null;
 }
 
 const STORAGE_KEY = "kenpai:dofus:stuff";
@@ -68,7 +81,21 @@ const newStuff = (): Stuff => ({
   scrolls: zeros(),
   slots: {},
   notes: "",
+  image: null,
 });
+
+/** Contenu envoyé à l'API pour enregistrer le stuff. */
+function toBuildData(stuff: Stuff): DofusBuildData {
+  return {
+    name: stuff.name.trim() || "Sans nom",
+    level: clampLevel(stuff.level),
+    base: stuff.base,
+    scrolls: stuff.scrolls,
+    slots: stuff.slots,
+    notes: stuff.notes,
+    image: stuff.image,
+  };
+}
 
 function loadStuff(): Stuff {
   try {
@@ -205,8 +232,24 @@ function NumberCell({
 
 // ─── Simulateur ────────────────────────────────────────────────────────────
 
-export function StuffSimulator() {
+export function StuffSimulator({
+  loggedIn,
+  initialBuildId,
+}: {
+  loggedIn: boolean;
+  /** Stuff enregistré à ouvrir (lien depuis le profil). */
+  initialBuildId?: string;
+}) {
   const [stuff, setStuff] = React.useState<Stuff>(loadStuff);
+  // Dernier contenu enregistré, pour signaler les modifications non sauvegardées.
+  const [savedJson, setSavedJson] = React.useState<string | null>(() => {
+    const initial = loadStuff();
+    return initial.buildId ? JSON.stringify(toBuildData(initial)) : null;
+  });
+  const [saveState, setSaveState] = React.useState<{
+    status: "idle" | "saving" | "saved" | "error";
+    message?: string;
+  }>({ status: "idle" });
   const [items, setItems] = React.useState<Record<number, DofusItem>>({});
   const [sets, setSets] = React.useState<Record<number, DofusSet>>({});
   const [loadError, setLoadError] = React.useState(false);
@@ -222,6 +265,51 @@ export function StuffSimulator() {
   }, [stuff]);
 
   const update = (patch: Partial<Stuff>) => setStuff((s) => ({ ...s, ...patch }));
+
+  /** Remplace le stuff affiché par un stuff enregistré. */
+  const openBuild = React.useCallback((build: DofusBuild) => {
+    const next: Stuff = { ...newStuff(), ...build.data, buildId: build.id };
+    setStuff(next);
+    setSavedJson(JSON.stringify(toBuildData(next)));
+    setSaveState({ status: "idle" });
+  }, []);
+
+  // Ouverture depuis le profil : /dofus/simulateur?stuff=<id>
+  React.useEffect(() => {
+    if (!loggedIn || !initialBuildId) return;
+    apiFetch<{ build: DofusBuild }>(`/dofus/builds/${initialBuildId}`)
+      .then(({ build }) => openBuild(build))
+      .catch(() =>
+        setSaveState({ status: "error", message: "Ce stuff enregistré est introuvable." }),
+      );
+  }, [loggedIn, initialBuildId, openBuild]);
+
+  const currentJson = JSON.stringify(toBuildData(stuff));
+  const unsaved = stuff.buildId !== undefined && savedJson !== currentJson;
+
+  async function save(asCopy = false) {
+    setSaveState({ status: "saving" });
+    const data = toBuildData(stuff);
+    try {
+      const existing = stuff.buildId && !asCopy;
+      const { build } = await apiFetch<{ build: DofusBuildSummary }>(
+        existing ? `/dofus/builds/${stuff.buildId}` : "/dofus/builds",
+        {
+          method: existing ? "PUT" : "POST",
+          body: asCopy ? { ...data, name: `${data.name} (copie)`.slice(0, 40) } : data,
+        },
+      );
+      const next = { ...stuff, buildId: build.id, name: build.name };
+      setStuff(next);
+      setSavedJson(JSON.stringify(toBuildData(next)));
+      setSaveState({ status: "saved", message: "Stuff enregistré sur votre profil." });
+    } catch (e) {
+      setSaveState({
+        status: "error",
+        message: e instanceof ApiError ? e.message : "L'enregistrement a échoué.",
+      });
+    }
+  }
 
   // Charge les objets équipés (au retour sur la page) et leurs panoplies.
   const equippedIds = Object.values(stuff.slots).filter((id): id is number => id !== undefined);
@@ -408,30 +496,101 @@ export function StuffSimulator() {
         <p className="pb-2 text-sm text-muted-foreground">
           Niveau du stuff : <strong className="text-foreground">{result.gearLevel || "—"}</strong>
         </p>
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="outline" className="ml-auto">
-              <RotateCcw aria-hidden="true" />
-              Nouveau stuff
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {loggedIn ? (
+            <>
+              <SavedBuildsDialog
+                currentId={stuff.buildId}
+                onOpen={openBuild}
+                onDeleted={(id) => {
+                  if (id !== stuff.buildId) return;
+                  update({ buildId: undefined });
+                  setSavedJson(null);
+                }}
+              />
+              {stuff.buildId && (
+                <Button
+                  variant="outline"
+                  disabled={saveState.status === "saving"}
+                  onClick={() => void save(true)}
+                >
+                  <Copy aria-hidden="true" />
+                  Copie
+                </Button>
+              )}
+              <Button
+                disabled={
+                  saveState.status === "saving" || (stuff.buildId !== undefined && !unsaved)
+                }
+                onClick={() => void save()}
+              >
+                <Save aria-hidden="true" />
+                {saveState.status === "saving"
+                  ? "Enregistrement…"
+                  : stuff.buildId && !unsaved
+                    ? "Enregistré"
+                    : "Enregistrer"}
+              </Button>
+            </>
+          ) : (
+            <Button asChild variant="outline">
+              <Link href="/connexion?redirect=/dofus/simulateur">
+                <LogIn aria-hidden="true" />
+                Se connecter pour enregistrer
+              </Link>
             </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-md">
-            <div>
-              <DialogTitle>Repartir de zéro ?</DialogTitle>
-              <DialogDescription className="mt-1">
-                L&apos;équipement, les caractéristiques et les notes actuels seront effacés.
-              </DialogDescription>
-            </div>
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <DialogClose asChild>
-                <Button variant="ghost">Annuler</Button>
-              </DialogClose>
-              <DialogClose asChild>
-                <Button onClick={() => setStuff(newStuff())}>Effacer</Button>
-              </DialogClose>
-            </div>
-          </DialogContent>
-        </Dialog>
+          )}
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="outline">
+                <RotateCcw aria-hidden="true" />
+                Nouveau
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-md">
+              <div>
+                <DialogTitle>Repartir de zéro ?</DialogTitle>
+                <DialogDescription className="mt-1">
+                  Le simulateur repart d&apos;un stuff vide. Les stuffs déjà enregistrés sur votre
+                  profil ne sont pas supprimés.
+                </DialogDescription>
+              </div>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <DialogClose asChild>
+                  <Button variant="ghost">Annuler</Button>
+                </DialogClose>
+                <DialogClose asChild>
+                  <Button
+                    onClick={() => {
+                      setStuff(newStuff());
+                      setSavedJson(null);
+                      setSaveState({ status: "idle" });
+                    }}
+                  >
+                    Effacer
+                  </Button>
+                </DialogClose>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+        {(saveState.message || unsaved) && (
+          <p
+            role="status"
+            className={cn(
+              "w-full text-sm",
+              saveState.status === "error"
+                ? "text-destructive"
+                : unsaved
+                  ? "text-gold"
+                  : "text-primary",
+            )}
+          >
+            {saveState.status === "error" || !unsaved
+              ? saveState.message
+              : "Modifications non enregistrées."}
+          </p>
+        )}
       </div>
 
       {loadError && (
@@ -440,7 +599,7 @@ export function StuffSimulator() {
         </p>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[19rem_minmax(0,1fr)_19rem]">
+      <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)_18rem]">
         {/* Colonne gauche : caractéristiques */}
         <div className="order-2 space-y-4 xl:order-1">
           <Panel title="Résumé" icon={ScrollText}>
@@ -523,11 +682,36 @@ export function StuffSimulator() {
                   <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone("power"))}>
                     {totals.power}
                   </td>
-                  <td className="py-0.5" colSpan={3}>
+                  <td className="py-0.5" colSpan={2}>
                     <span className="flex items-center gap-1.5">
                       <StatIcon stat="power" />
                       {STATS.power}
                     </span>
+                  </td>
+                  <td className="py-0.5">
+                    <div
+                      className="flex w-[4.5rem] gap-1"
+                      role="group"
+                      aria-label="Tous les parchemins"
+                    >
+                      {[0, SCROLL_MAX].map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() =>
+                            update({
+                              scrolls: Object.fromEntries(
+                                CHARACTERISTICS.map((c) => [c, value]),
+                              ) as Stuff["scrolls"],
+                            })
+                          }
+                          title={`Mettre tous les parchemins à ${value}`}
+                          className="h-7 flex-1 rounded-md border border-input bg-background/60 text-xs font-semibold tabular-nums transition-colors hover:bg-accent"
+                        >
+                          {value}
+                        </button>
+                      ))}
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -546,16 +730,22 @@ export function StuffSimulator() {
         {/* Centre : équipement */}
         <div className="order-1 space-y-4 xl:order-2">
           <section aria-label="Équipement" className="frame-gilded bg-sky rounded-2xl border p-4">
-            <div className="grid grid-cols-[1fr_minmax(0,2.7fr)_1fr] gap-3">
-              <div className="grid gap-2">
+            {/* Grille de 6 colonnes égales : tous les emplacements ont la même taille. */}
+            <div className="grid grid-cols-6 gap-2.5">
+              <div className="grid gap-2.5">
                 {(["amulet", "shield", "ring1", "belt", "boots"] as const).map((id) =>
                   renderSlot(id, "right"),
                 )}
               </div>
-              <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-dashed border-gold/30 bg-card/40 p-3 text-sm">
+              <div className="col-span-4 flex min-w-0 flex-col gap-2 rounded-xl border border-dashed border-gold/30 bg-card/40 p-3 text-sm">
                 <p className="font-display text-center text-base tracking-wide">
                   {stuff.name || "Sans nom"}
                 </p>
+                <CharacterImage
+                  image={stuff.image}
+                  onChange={(image) => update({ image })}
+                  className="my-1"
+                />
                 <p className="text-center text-muted-foreground">
                   Niveau {level} · {equipped.length} / {SLOTS.length} objets
                 </p>
@@ -594,65 +784,16 @@ export function StuffSimulator() {
                   </p>
                 )}
               </div>
-              <div className="grid gap-2">
+              <div className="grid gap-2.5">
                 {(["hat", "weapon", "ring2", "cloak", "pet"] as const).map((id) =>
                   renderSlot(id, "left"),
                 )}
               </div>
-            </div>
-            <div className="mx-auto mt-3 grid max-w-[30rem] grid-cols-6 gap-2">
               {(["dofus1", "dofus2", "dofus3", "dofus4", "dofus5", "dofus6"] as const).map((id) =>
                 renderSlot(id, "top"),
               )}
             </div>
           </section>
-
-          {setGroups.length > 0 && (
-            <Panel title="Panoplies" icon={Layers}>
-              <ul className="grid gap-3">
-                {setGroups.map(({ set, items: setItems, active }) => (
-                  <li
-                    key={set.id}
-                    className={cn(
-                      "rounded-lg border p-3",
-                      active ? "border-gold/40 bg-gold-soft/60" : "bg-background/40",
-                    )}
-                  >
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex -space-x-2">
-                        {setItems.map((item) => (
-                          <span
-                            key={item.id}
-                            title={item.name}
-                            className="flex size-10 items-center justify-center rounded-full border border-gold/40 bg-card"
-                          >
-                            <ItemIcon item={item} className="size-8" />
-                          </span>
-                        ))}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium">{set.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {setItems.length} / {set.itemIds.length} objets équipés
-                        </p>
-                      </div>
-                    </div>
-                    {active ? (
-                      <ul className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-3">
-                        {active.effects.map((e, i) => (
-                          <EffectRow key={i} effect={e} />
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Équipez un objet de plus pour activer les bonus.
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-          )}
 
           <Panel title="Notes" icon={NotebookPen}>
             <textarea
@@ -680,6 +821,54 @@ export function StuffSimulator() {
           </Panel>
         </div>
       </div>
+
+      {/* Panoplies : sur toute la largeur, sous les trois colonnes. */}
+      {setGroups.length > 0 && (
+        <Panel title="Panoplies" icon={Layers}>
+          <ul className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+            {setGroups.map(({ set, items: setItems, active }) => (
+              <li
+                key={set.id}
+                className={cn(
+                  "rounded-lg border p-3",
+                  active ? "border-gold/40 bg-gold-soft/60" : "bg-background/40",
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex -space-x-2">
+                    {setItems.map((item) => (
+                      <span
+                        key={item.id}
+                        title={item.name}
+                        className="flex size-10 items-center justify-center rounded-full border border-gold/40 bg-card"
+                      >
+                        <ItemIcon item={item} className="size-8" />
+                      </span>
+                    ))}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">{set.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {setItems.length} / {set.itemIds.length} objets équipés
+                    </p>
+                  </div>
+                </div>
+                {active ? (
+                  <ul className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-3">
+                    {active.effects.map((e, i) => (
+                      <EffectRow key={i} effect={e} />
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Équipez un objet de plus pour activer les bonus.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
 
       {pickingSlot && (
         <ItemPicker

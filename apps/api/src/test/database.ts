@@ -37,7 +37,7 @@ export async function openTestDatabase() {
     ...database,
     reset: () =>
       database.db.execute(
-        "truncate table reviews, games, friendships, sessions, users restart identity cascade",
+        "truncate table dofus_builds, reviews, games, friendships, sessions, users restart identity cascade",
       ),
   };
 }

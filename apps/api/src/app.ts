@@ -16,6 +16,7 @@ import { reviewRoutes } from "./modules/reviews/routes";
 import { DofusClient } from "./modules/dofus/client";
 import { RawgClient } from "./modules/rawg/client";
 import { dofusRoutes } from "./modules/dofus/routes";
+import { dofusBuildRoutes } from "./modules/dofus/builds";
 import { healthRoutes } from "./routes/health";
 
 export interface AppDeps {
@@ -88,6 +89,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     db: deps.db,
     rawg: deps.rawg ?? new RawgClient({ apiKey: deps.env.RAWG_API_KEY }),
   });
+  await app.register(dofusBuildRoutes, { prefix: "/api/dofus/builds", db: deps.db });
   await app.register(dofusRoutes, {
     prefix: "/api/dofus",
     client: deps.dofus ?? new DofusClient(),

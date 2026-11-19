@@ -7,3 +7,4 @@
 export * from "./users";
 export * from "./friendships";
 export * from "./reviews";
+export * from "./dofus";
