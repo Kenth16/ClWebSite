@@ -4,6 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  Hammer,
+  X,
   Copy,
   LogIn,
   Save,
@@ -20,6 +22,8 @@ import {
 } from "lucide-react";
 import {
   CHARACTERISTICS,
+  EXO_STATS,
+  STAT_CAPS,
   LEVEL_MAX,
   SCROLL_MAX,
   SLOTS,
@@ -34,6 +38,8 @@ import {
   type DofusBuildSummary,
   type DofusItem,
   type DofusSet,
+  type ExoStat,
+  type Exos,
   type SlotId,
   type StatKey,
 } from "@kenpai/shared";
@@ -52,6 +58,7 @@ import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ItemIcon, ItemPicker } from "./item-picker";
 import { CharacterImage } from "./character-image";
+import { DamageCalculator } from "./damage-calculator";
 import { SavedBuildsDialog } from "./saved-builds";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
@@ -68,6 +75,10 @@ interface Stuff {
   notes: string;
   /** Image du personnage (data URL réduite), ou null. */
   image: string | null;
+  /** Classe choisie pour le calcul des dégâts. */
+  breedId: number | null;
+  /** Exos de forgemagie PA, PM, PO. */
+  exos: Exos;
 }
 
 const STORAGE_KEY = "kenpai:dofus:stuff";
@@ -82,6 +93,8 @@ const newStuff = (): Stuff => ({
   slots: {},
   notes: "",
   image: null,
+  breedId: null,
+  exos: { ap: false, mp: false, range: false },
 });
 
 /** Contenu envoyé à l'API pour enregistrer le stuff. */
@@ -94,6 +107,8 @@ function toBuildData(stuff: Stuff): DofusBuildData {
     slots: stuff.slots,
     notes: stuff.notes,
     image: stuff.image,
+    breedId: stuff.breedId,
+    exos: stuff.exos,
   };
 }
 
@@ -109,7 +124,6 @@ function loadStuff(): Stuff {
 
 // ─── Présentation des caractéristiques ─────────────────────────────────────
 
-const MAIN: StatKey[] = ["ap", "mp", "range"];
 const SUMMARY: StatKey[] = ["initiative", "critical", "summons", "heals", "prospecting"];
 const SECONDARY: StatKey[] = [
   "dodge",
@@ -120,13 +134,16 @@ const SECONDARY: StatKey[] = [
   "mpReduction",
   "pods",
 ];
-const DAMAGE: StatKey[] = [
+/** Dommages fixes et élémentaires, puis les autres (critiques, poussée, %). */
+const DAMAGE_FIXED: StatKey[] = [
   "damage",
   "neutralDamage",
   "earthDamage",
   "fireDamage",
   "waterDamage",
   "airDamage",
+];
+const DAMAGE_OTHER: StatKey[] = [
   "criticalDamage",
   "pushbackDamage",
   "weaponDamagePct",
@@ -134,7 +151,8 @@ const DAMAGE: StatKey[] = [
   "meleeDamagePct",
   "rangedDamagePct",
 ];
-const RESISTANCE: StatKey[] = [
+/** Résistances fixes, puis résistances en %. */
+const RESISTANCE_FIXED: StatKey[] = [
   "neutralRes",
   "earthRes",
   "fireRes",
@@ -142,6 +160,8 @@ const RESISTANCE: StatKey[] = [
   "airRes",
   "criticalRes",
   "pushbackRes",
+];
+const RESISTANCE_PCT: StatKey[] = [
   "neutralResPct",
   "earthResPct",
   "fireResPct",
@@ -177,19 +197,20 @@ function Panel({
 
 function StatGrid({ keys, totals }: { keys: StatKey[]; totals: Record<StatKey, number> }) {
   return (
-    <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-sm">
+    <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[0.82rem]">
       {keys.map((k) => (
         <div
           key={k}
+          title={`${STATS[k]} : ${totals[k]}`}
           className={cn(
-            "flex items-center gap-2 rounded-md px-1.5 py-1",
+            "flex min-w-0 items-center gap-1.5 rounded-md px-1 py-1",
             totals[k] !== 0 && "bg-muted/50",
           )}
         >
           <StatIcon stat={k} />
           <dd
             className={cn(
-              "min-w-8 shrink-0 text-right font-semibold tabular-nums",
+              "min-w-7 shrink-0 text-right font-semibold tabular-nums",
               totals[k] < 0 && "text-destructive",
               totals[k] === 0 && "text-muted-foreground",
             )}
@@ -202,6 +223,10 @@ function StatGrid({ keys, totals }: { keys: StatKey[]; totals: Record<StatKey, n
     </dl>
   );
 }
+
+/** Champ numérique sans les flèches d'incrément du navigateur. */
+const NO_SPIN =
+  "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
 
 function NumberCell({
   value,
@@ -225,7 +250,7 @@ function NumberCell({
       onChange={(e) =>
         onChange(Math.min(max, Math.max(0, Math.floor(Number(e.target.value)) || 0)))
       }
-      className="h-8 w-[4.5rem] px-2 text-right tabular-nums"
+      className={cn("h-8 w-14 px-2 text-right tabular-nums", NO_SPIN)}
     />
   );
 }
@@ -265,6 +290,8 @@ export function StuffSimulator({
   }, [stuff]);
 
   const update = (patch: Partial<Stuff>) => setStuff((s) => ({ ...s, ...patch }));
+  const toggleExo = (k: ExoStat) =>
+    setStuff((s) => ({ ...s, exos: { ...s.exos, [k]: !s.exos[k] } }));
 
   /** Remplace le stuff affiché par un stuff enregistré. */
   const openBuild = React.useCallback((build: DofusBuild) => {
@@ -296,7 +323,9 @@ export function StuffSimulator({
         existing ? `/dofus/builds/${stuff.buildId}` : "/dofus/builds",
         {
           method: existing ? "PUT" : "POST",
-          body: asCopy ? { ...data, name: `${data.name} (copie)`.slice(0, 40) } : data,
+          body: asCopy
+            ? { ...data, name: `${data.name.replace(/( \(copie\))+$/, "")} (copie)`.slice(0, 40) }
+            : data,
         },
       );
       const next = { ...stuff, buildId: build.id, name: build.name };
@@ -352,6 +381,7 @@ export function StuffSimulator({
     scrolls: stuff.scrolls,
     items: equipped.map((e) => e.item),
     sets: setIds.map((id) => sets[id]).filter((s): s is DofusSet => !!s),
+    exos: stuff.exos,
   });
   const { totals } = result;
 
@@ -367,6 +397,7 @@ export function StuffSimulator({
     const active = result.activeSets.find((a) => a.set.id === id) ?? null;
     return [{ set, items: setItems, active }];
   });
+  const activeGroups = setGroups.filter((g) => g.active);
 
   // Alertes : niveau, conditions, objets en double.
   const warnings: string[] = [];
@@ -490,7 +521,7 @@ export function StuffSimulator({
             max={LEVEL_MAX}
             value={stuff.level}
             onChange={(e) => update({ level: clampLevel(Number(e.target.value)) })}
-            className="w-24 tabular-nums"
+            className={cn("w-24 tabular-nums", NO_SPIN)}
           />
         </label>
         <p className="pb-2 text-sm text-muted-foreground">
@@ -611,18 +642,47 @@ export function StuffSimulator({
               </p>
             </div>
             <div className="mb-3 grid grid-cols-3 gap-2">
-              {MAIN.map((k) => (
-                <div
-                  key={k}
-                  className="flex flex-col items-center rounded-lg border bg-background/50 py-2"
-                >
-                  <StatIcon stat={k} className={cn("size-5", k !== "range" && "fill-current")} />
-                  <span className="mt-0.5 font-serif text-xl font-bold tabular-nums">
-                    {totals[k]}
-                  </span>
-                  <span className="text-xs text-muted-foreground">{STATS[k]}</span>
-                </div>
-              ))}
+              {EXO_STATS.map((k) => {
+                const exo = stuff.exos[k];
+                const atCap = !exo && totals[k] >= STAT_CAPS[k];
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => toggleExo(k)}
+                    disabled={atCap}
+                    aria-pressed={exo}
+                    title={
+                      exo
+                        ? `Retirer l'exo ${STATS[k]}`
+                        : atCap
+                          ? `Maximum atteint (${STAT_CAPS[k]} ${STATS[k]})`
+                          : `Ajouter un exo ${STATS[k]} (+1)`
+                    }
+                    className={cn(
+                      "relative flex flex-col items-center rounded-lg border py-2 transition-colors",
+                      exo
+                        ? "border-gold bg-gold-soft text-gold shadow-[inset_0_0_0_1px_var(--gold)]"
+                        : "bg-background/50 hover:border-gold/60 hover:bg-accent",
+                      atCap && "cursor-not-allowed opacity-70",
+                    )}
+                  >
+                    {exo && (
+                      <span className="absolute top-1 right-1.5 text-[0.6rem] font-bold">EXO</span>
+                    )}
+                    <StatIcon
+                      stat={k}
+                      className={cn("size-5", k !== "range" && "fill-current", exo && "text-gold")}
+                    />
+                    <span className="mt-0.5 font-serif text-xl font-bold tabular-nums">
+                      {totals[k]}
+                    </span>
+                    <span className={cn("text-xs", exo ? "text-gold" : "text-muted-foreground")}>
+                      {STATS[k]}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             <StatGrid keys={SUMMARY} totals={totals} />
           </Panel>
@@ -639,13 +699,13 @@ export function StuffSimulator({
                 {result.pointsLeft}
               </strong>
             </p>
-            <table className="w-full text-sm">
+            <table className="w-full table-fixed text-[0.82rem]">
               <thead>
                 <tr className="text-xs text-muted-foreground">
-                  <th className="pb-1 text-left font-normal">Total</th>
+                  <th className="w-10 pb-1 text-left font-normal">Total</th>
                   <th className="pb-1 text-left font-normal" />
-                  <th className="pb-1 font-normal">Base</th>
-                  <th className="pb-1 font-normal">Parcho</th>
+                  <th className="w-[3.75rem] pb-1 text-left font-normal">Base</th>
+                  <th className="w-14 pb-1 text-left font-normal">Parcho</th>
                 </tr>
               </thead>
               <tbody>
@@ -654,10 +714,10 @@ export function StuffSimulator({
                     <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone(c))}>
                       {totals[c]}
                     </td>
-                    <td className="py-0.5 pr-2">
-                      <span className="flex items-center gap-1.5">
+                    <td className="py-0.5 pr-1">
+                      <span className="flex min-w-0 items-center gap-1.5">
                         <StatIcon stat={c} />
-                        {STATS[c]}
+                        <span className="truncate">{STATS[c]}</span>
                       </span>
                     </td>
                     <td className="py-0.5 pr-1">
@@ -689,11 +749,7 @@ export function StuffSimulator({
                     </span>
                   </td>
                   <td className="py-0.5">
-                    <div
-                      className="flex w-[4.5rem] gap-1"
-                      role="group"
-                      aria-label="Tous les parchemins"
-                    >
+                    <div className="flex w-14 gap-1" role="group" aria-label="Tous les parchemins">
                       {[0, SCROLL_MAX].map((value) => (
                         <button
                           key={value}
@@ -706,7 +762,7 @@ export function StuffSimulator({
                             })
                           }
                           title={`Mettre tous les parchemins à ${value}`}
-                          className="h-7 flex-1 rounded-md border border-input bg-background/60 text-xs font-semibold tabular-nums transition-colors hover:bg-accent"
+                          className="h-7 flex-1 rounded-md border border-input bg-background/60 text-[0.65rem] font-semibold tabular-nums transition-colors hover:bg-accent"
                         >
                           {value}
                         </button>
@@ -732,59 +788,87 @@ export function StuffSimulator({
           <section aria-label="Équipement" className="frame-gilded bg-sky rounded-2xl border p-4">
             {/* Grille de 6 colonnes égales : tous les emplacements ont la même taille. */}
             <div className="grid grid-cols-6 gap-2.5">
-              <div className="grid gap-2.5">
+              <div className="grid content-start gap-2.5">
                 {(["amulet", "shield", "ring1", "belt", "boots"] as const).map((id) =>
                   renderSlot(id, "right"),
                 )}
               </div>
-              <div className="col-span-4 flex min-w-0 flex-col gap-2 rounded-xl border border-dashed border-gold/30 bg-card/40 p-3 text-sm">
-                <p className="font-display text-center text-base tracking-wide">
-                  {stuff.name || "Sans nom"}
-                </p>
-                <CharacterImage
-                  image={stuff.image}
-                  onChange={(image) => update({ image })}
-                  className="my-1"
-                />
-                <p className="text-center text-muted-foreground">
-                  Niveau {level} · {equipped.length} / {SLOTS.length} objets
-                </p>
-                {setGroups.length > 0 && (
-                  <ul className="mt-1 flex flex-wrap justify-center gap-1.5">
-                    {setGroups.map(({ set, items: setItems, active }) => (
-                      <li
-                        key={set.id}
-                        className={cn(
-                          "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs",
-                          active ? "border-gold/50 bg-gold-soft" : "text-muted-foreground",
-                        )}
-                      >
-                        <Layers className="size-3 text-gold" aria-hidden="true" />
-                        {set.name}
-                        <span className="tabular-nums">
-                          {setItems.length}/{set.itemIds.length}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {warnings.length > 0 && (
-                  <ul className="mt-1 grid gap-1 text-xs text-destructive">
-                    {warnings.map((w, i) => (
-                      <li key={i} className="flex gap-1.5">
-                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                        {w}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {equipped.length === 0 && (
-                  <p className="m-auto text-center text-muted-foreground">
-                    Cliquez sur un emplacement pour choisir un objet.
+              {/* La hauteur est donnée par les emplacements : le contenu défile si besoin. */}
+              <div className="relative col-span-4 min-h-0 rounded-xl border border-dashed border-gold/30 bg-card/40 text-sm">
+                <div className="absolute inset-0 flex flex-col gap-2 overflow-y-auto p-3">
+                  <p className="font-display truncate text-center text-base tracking-wide">
+                    {stuff.name || "Sans nom"}
                   </p>
-                )}
+                  <CharacterImage
+                    image={stuff.image}
+                    onChange={(image) => update({ image })}
+                    className="my-1"
+                  />
+                  <p className="text-center text-muted-foreground">
+                    Niveau {level} · {equipped.length} / {SLOTS.length} objets
+                  </p>
+                  <div className="mx-auto w-full max-w-60">
+                    <DamageCalculator
+                      totals={totals}
+                      level={level}
+                      breedId={stuff.breedId}
+                      onBreedChange={(breedId) => update({ breedId })}
+                    />
+                  </div>
+                  {activeGroups.length > 0 && (
+                    <ul className="mt-1 grid gap-1.5">
+                      {activeGroups.map(({ set, items: setItems }) => (
+                        <li
+                          key={set.id}
+                          className="flex min-w-0 items-center gap-2.5 rounded-lg border border-gold/40 bg-gold-soft py-1.5 pr-2 pl-3"
+                        >
+                          <div className="flex shrink-0 -space-x-2">
+                            {setItems.map((item) => (
+                              <span
+                                key={item.id}
+                                title={item.name}
+                                className="flex size-8 items-center justify-center rounded-full border border-gold/40 bg-card"
+                              >
+                                <ItemIcon item={item} className="size-6" />
+                              </span>
+                            ))}
+                          </div>
+                          <div className="min-w-0 leading-tight">
+                            <p className="truncate font-medium">{set.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {setItems.length} / {set.itemIds.length} objets équipés
+                            </p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {setGroups.length > activeGroups.length && (
+                    <p className="text-center text-xs text-muted-foreground">
+                      {setGroups.length - activeGroups.length === 1
+                        ? "1 panoplie incomplète"
+                        : `${setGroups.length - activeGroups.length} panoplies incomplètes`}{" "}
+                      · détail plus bas
+                    </p>
+                  )}
+                  {warnings.length > 0 && (
+                    <ul className="mt-1 grid gap-1 text-xs text-destructive">
+                      {warnings.map((w, i) => (
+                        <li key={i} className="flex gap-1.5">
+                          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                          {w}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {equipped.length === 0 && (
+                    <p className="m-auto text-center text-muted-foreground">
+                      Cliquez sur un emplacement pour choisir un objet.
+                    </p>
+                  )}
+                </div>
               </div>
-              <div className="grid gap-2.5">
+              <div className="grid content-start gap-2.5">
                 {(["hat", "weapon", "ring2", "cloak", "pet"] as const).map((id) =>
                   renderSlot(id, "left"),
                 )}
@@ -814,10 +898,44 @@ export function StuffSimulator({
         {/* Colonne droite : dommages et résistances */}
         <div className="order-3 space-y-4">
           <Panel title="Dommages" icon={Swords}>
-            <StatGrid keys={DAMAGE} totals={totals} />
+            <StatGrid keys={DAMAGE_FIXED} totals={totals} />
+            <hr className="my-2 border-border" />
+            <StatGrid keys={DAMAGE_OTHER} totals={totals} />
           </Panel>
           <Panel title="Résistances" icon={Shield}>
-            <StatGrid keys={RESISTANCE} totals={totals} />
+            <StatGrid keys={RESISTANCE_FIXED} totals={totals} />
+            <hr className="my-2 border-border" />
+            <StatGrid keys={RESISTANCE_PCT} totals={totals} />
+          </Panel>
+          <Panel title="Forgemagie" icon={Hammer}>
+            {EXO_STATS.some((k) => stuff.exos[k]) ? (
+              <ul className="grid gap-1.5 text-sm">
+                {EXO_STATS.filter((k) => stuff.exos[k]).map((k) => (
+                  <li
+                    key={k}
+                    className="flex items-center gap-2 rounded-md border border-gold/40 bg-gold-soft px-2 py-1.5"
+                  >
+                    <StatIcon stat={k} className={cn(k !== "range" && "fill-current")} />
+                    <span className="flex-1">
+                      Exo {STATS[k]} <span className="font-semibold text-gold">+1</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => toggleExo(k)}
+                      aria-label={`Retirer l'exo ${STATS[k]}`}
+                      title="Retirer"
+                      className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Aucun exo. Cliquez sur PA, PM ou PO dans le Résumé pour simuler un exo.
+              </p>
+            )}
           </Panel>
         </div>
       </div>

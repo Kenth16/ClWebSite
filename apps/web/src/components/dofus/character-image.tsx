@@ -78,7 +78,7 @@ export function CharacterImage({
           <img
             src={image}
             alt="Personnage"
-            className="max-h-56 w-auto max-w-full object-contain drop-shadow-lg"
+            className="max-h-44 w-auto max-w-full object-contain drop-shadow-lg"
             draggable={false}
           />
           <div className="mt-2 flex gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
@@ -108,7 +108,7 @@ export function CharacterImage({
           type="button"
           disabled={busy}
           onClick={() => input.current?.click()}
-          className="flex h-44 w-36 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gold/40 bg-background/40 px-3 text-center text-sm text-muted-foreground transition-colors hover:border-gold/70 hover:bg-accent hover:text-foreground"
+          className="flex h-36 w-32 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gold/40 bg-background/40 px-3 text-center text-sm text-muted-foreground transition-colors hover:border-gold/70 hover:bg-accent hover:text-foreground"
         >
           {busy ? (
             <Loader2 className="size-8 animate-spin" aria-hidden="true" />

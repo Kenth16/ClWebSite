@@ -17,6 +17,7 @@ import { DofusClient } from "./modules/dofus/client";
 import { RawgClient } from "./modules/rawg/client";
 import { dofusRoutes } from "./modules/dofus/routes";
 import { dofusBuildRoutes } from "./modules/dofus/builds";
+import type { DofusDbClient } from "./modules/dofus/spells";
 import { healthRoutes } from "./routes/health";
 
 export interface AppDeps {
@@ -28,6 +29,8 @@ export interface AppDeps {
   authRateLimit?: number;
   /** Accès aux données Dofus (remplaçable dans les tests). */
   dofus?: DofusClient;
+  /** Classes et sorts Dofus (remplaçable dans les tests). */
+  dofusSpells?: DofusDbClient;
   /** Catalogue de jeux RAWG (remplaçable dans les tests). */
   rawg?: RawgClient;
 }
@@ -93,6 +96,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(dofusRoutes, {
     prefix: "/api/dofus",
     client: deps.dofus ?? new DofusClient(),
+    spells: deps.dofusSpells,
   });
 
   return app;

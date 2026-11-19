@@ -4,6 +4,8 @@ import {
   availablePoints,
   characteristicCost,
   computeCharacter,
+  computeSpellDamage,
+  spellGradeAt,
   conditionsMet,
   conditionsText,
   statFromEffectName,
@@ -11,6 +13,7 @@ import {
   type DofusConditionTree,
   type DofusItem,
   type DofusSet,
+  type DofusSpell,
 } from "./dofus";
 
 const zero = { vitality: 0, wisdom: 0, strength: 0, intelligence: 0, chance: 0, agility: 0 };
@@ -91,6 +94,29 @@ describe("simulateur Dofus", () => {
     expect(r.totals.lock).toBe(2);
   });
 
+  it("ajoute les exos PA, PM, PO sans dépasser 12 PA, 6 PM et 6 PO", () => {
+    const base = { level: 200, base: zero, scrolls: zero, sets: [] };
+    const plain = computeCharacter({ ...base, items: [] }).totals;
+    expect([plain.ap, plain.mp, plain.range]).toEqual([7, 3, 0]);
+    const exo = computeCharacter({
+      ...base,
+      items: [],
+      exos: { ap: true, mp: true, range: true },
+    }).totals;
+    expect([exo.ap, exo.mp, exo.range]).toEqual([8, 4, 1]);
+    const full = item(9, [
+      ["PA", 5],
+      ["PM", 3],
+      ["Portée", 6],
+    ]);
+    const capped = computeCharacter({
+      ...base,
+      items: [full],
+      exos: { ap: true, mp: true, range: true },
+    }).totals;
+    expect([capped.ap, capped.mp, capped.range]).toEqual([12, 6, 6]);
+  });
+
   it("active les bonus de panoplie selon le nombre d'objets", () => {
     const set: DofusSet = {
       id: 7,
@@ -152,5 +178,82 @@ describe("simulateur Dofus", () => {
     expect(conditionsMet(tree, { level: 100, totals: { ...totals, strength: 300 } })).toBe(false);
     expect(conditionsMet(tree, { level: 160, totals: { ...totals, strength: 300 } })).toBe(true);
     expect(conditionsText(tree)).toBe("Force > 249 et (Niveau > 150 ou Agilité > 99)");
+  });
+});
+
+describe("calcul des dégâts des sorts", () => {
+  const totals = computeCharacter({
+    level: 200,
+    base: { ...zero, chance: 200 },
+    scrolls: zero,
+    items: [],
+    sets: [],
+  }).totals;
+
+  const glacee: DofusSpell = {
+    id: 32435,
+    name: "Flèche Glacée",
+    icon: null,
+    variant: 693,
+    grades: [
+      {
+        grade: 1,
+        minLevel: 1,
+        apCost: 3,
+        minRange: 1,
+        range: 6,
+        criticalChance: 10,
+        lines: [{ element: "water", kind: "damage", min: 12, max: 14 }],
+        criticalLines: [{ element: "water", kind: "damage", min: 15, max: 17 }],
+      },
+      {
+        grade: 3,
+        minLevel: 133,
+        apCost: 3,
+        minRange: 1,
+        range: 6,
+        criticalChance: 10,
+        lines: [{ element: "water", kind: "damage", min: 21, max: 24 }],
+        criticalLines: [{ element: "water", kind: "damage", min: 25, max: 29 }],
+      },
+    ],
+  };
+
+  it("choisit le grade selon le niveau", () => {
+    expect(spellGradeAt(glacee, 100)?.grade).toBe(1);
+    expect(spellGradeAt(glacee, 200)?.grade).toBe(3);
+  });
+
+  it("applique la caractéristique, les dommages fixes et les pourcentages", () => {
+    const grade = spellGradeAt(glacee, 200)!;
+    // Chance 200 : × 3. 21 → 63, 24 → 72.
+    const plain = computeSpellDamage(totals, grade);
+    expect(plain.lines[0]!.normal).toEqual({ min: 63, max: 72 });
+    expect(plain.lines[0]!.critical).toEqual({ min: 75, max: 87 });
+    expect(plain.melee).toBe(false);
+
+    const geared = computeSpellDamage(
+      {
+        ...totals,
+        power: 100,
+        waterDamage: 10,
+        damage: 5,
+        criticalDamage: 20,
+        spellDamagePct: 10,
+        rangedDamagePct: 10,
+        critical: 40,
+      },
+      grade,
+    );
+    // 21 × 4 + 15 = 99, × 1,2 = 118 ; critique : 25 × 4 + 35 = 135, × 1,2 = 162.
+    expect(geared.lines[0]!.normal.min).toBe(118);
+    expect(geared.lines[0]!.critical!.min).toBe(162);
+    expect(geared.criticalChance).toBe(50);
+  });
+
+  it("calcule la moyenne pondérée par les critiques", () => {
+    const r = computeSpellDamage({ ...totals, critical: 90 }, spellGradeAt(glacee, 200)!);
+    expect(r.criticalChance).toBe(100);
+    expect(r.average).toBe(81); // (75 + 87) / 2
   });
 });

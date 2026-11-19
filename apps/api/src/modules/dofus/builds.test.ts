@@ -23,6 +23,8 @@ const build = {
   slots: { hat: 8009, dofus1: 7754 },
   notes: "PvM",
   image: null,
+  breedId: 9,
+  exos: { ap: true, mp: false, range: false },
 };
 /** Petite image PNG valide (1 × 1 pixel). */
 const PNG =

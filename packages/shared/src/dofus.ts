@@ -252,6 +252,13 @@ export function isSlotFamily(value: string): value is SlotFamily {
 export const LEVEL_MAX = 200;
 export const SCROLL_MAX = 100;
 
+/** Exos de forgemagie : +1 PA, PM ou PO. */
+export const EXO_STATS = ["ap", "mp", "range"] as const satisfies readonly StatKey[];
+export type ExoStat = (typeof EXO_STATS)[number];
+export type Exos = Record<ExoStat, boolean>;
+/** Valeurs maximales en jeu (jet théorique) : 12 PA, 6 PM, 6 PO. */
+export const STAT_CAPS: Record<ExoStat, number> = { ap: 12, mp: 6, range: 6 };
+
 export interface CharacterInput {
   level: number;
   /** Points de caractéristique investis. */
@@ -261,6 +268,8 @@ export interface CharacterInput {
   items: DofusItem[];
   /** Panoplies des objets équipés (pour leurs bonus). */
   sets: DofusSet[];
+  /** Exos PA, PM, PO appliqués par forgemagie. */
+  exos?: Partial<Exos>;
 }
 
 /** Coût en points de caractéristique pour atteindre `value` dans une caractéristique. */
@@ -356,6 +365,12 @@ export function computeCharacter(input: CharacterInput): CharacterResult {
     totals[k] += tenth(totals.wisdom);
   }
 
+  // Exos de forgemagie, puis plafonds du jeu (12 PA, 6 PM, 6 PO).
+  for (const k of EXO_STATS) {
+    if (input.exos?.[k]) totals[k] += 1;
+    totals[k] = Math.min(totals[k], STAT_CAPS[k]);
+  }
+
   const pointsSpent = CHARACTERISTICS.reduce(
     (sum, c) => sum + characteristicCost(c, input.base[c] ?? 0),
     0,
@@ -448,6 +463,12 @@ export const dofusBuildSchema = z.object({
   scrolls: characteristicValues(SCROLL_MAX),
   slots: z.partialRecord(z.enum(SLOT_IDS), z.number().int().positive()),
   notes: z.string().max(BUILD_NOTES_MAX).default(""),
+  /** Exos de forgemagie PA, PM, PO. */
+  exos: z
+    .object({ ap: z.boolean(), mp: z.boolean(), range: z.boolean() })
+    .default({ ap: false, mp: false, range: false }),
+  /** Classe choisie pour le calcul des dégâts (identifiant DofusDB), ou null. */
+  breedId: z.number().int().positive().nullable().default(null),
   /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */
   image: z
     .string()
@@ -468,4 +489,123 @@ export interface DofusBuildSummary {
 
 export interface DofusBuild extends DofusBuildSummary {
   data: DofusBuildData;
+}
+
+// ─── Classes, sorts et calcul des dégâts ───────────────────────────────────
+
+export type DofusElement = "neutral" | "earth" | "fire" | "water" | "air";
+
+export const ELEMENTS: Record<
+  DofusElement,
+  { label: string; stat: Characteristic; damage: StatKey }
+> = {
+  neutral: { label: "Neutre", stat: "strength", damage: "neutralDamage" },
+  earth: { label: "Terre", stat: "strength", damage: "earthDamage" },
+  fire: { label: "Feu", stat: "intelligence", damage: "fireDamage" },
+  water: { label: "Eau", stat: "chance", damage: "waterDamage" },
+  air: { label: "Air", stat: "agility", damage: "airDamage" },
+};
+
+export interface DofusBreed {
+  id: number;
+  name: string;
+  icon: string | null;
+}
+
+/** Ligne de dégâts d'un sort : élément, jet minimum et maximum. */
+export interface SpellDamageLine {
+  element: DofusElement;
+  /** « steal » : vol de vie (mêmes dégâts, le lanceur est soigné). */
+  kind: "damage" | "steal";
+  min: number;
+  max: number;
+}
+
+export interface SpellGrade {
+  grade: number;
+  /** Niveau de personnage nécessaire. */
+  minLevel: number;
+  apCost: number;
+  minRange: number;
+  range: number;
+  /** Taux de critique de base du sort (%). */
+  criticalChance: number;
+  lines: SpellDamageLine[];
+  criticalLines: SpellDamageLine[];
+}
+
+export interface DofusSpell {
+  id: number;
+  name: string;
+  icon: string | null;
+  /** Les deux sorts d'une même paire de variantes partagent ce numéro. */
+  variant: number;
+  grades: SpellGrade[];
+}
+
+/** Grade d'un sort utilisable au niveau donné (le plus élevé), ou null. */
+export function spellGradeAt(spell: DofusSpell, level: number): SpellGrade | null {
+  const usable = spell.grades.filter((g) => g.minLevel <= level);
+  return usable.sort((a, b) => b.grade - a.grade)[0] ?? null;
+}
+
+export interface LineDamage {
+  element: DofusElement;
+  kind: SpellDamageLine["kind"];
+  normal: { min: number; max: number };
+  critical: { min: number; max: number } | null;
+}
+
+export interface SpellDamage {
+  lines: LineDamage[];
+  /** Chance de coup critique retenue (%), entre 0 et 100. */
+  criticalChance: number;
+  /** Dégâts moyens par lancer, critiques compris (cible sans résistance). */
+  average: number;
+  /** Portée considérée : mêlée (portée 1) ou distance. */
+  melee: boolean;
+}
+
+/**
+ * Dégâts d'un sort sur une cible sans résistances :
+ * (jet × (100 + caractéristique + puissance) / 100 + dommages + dommages de l'élément)
+ * × (100 + % dommages aux sorts + % dommages mêlée ou distance) / 100.
+ * En coup critique, le jet critique est utilisé et les dommages critiques s'ajoutent.
+ */
+export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): SpellDamage {
+  const melee = grade.range <= 1;
+  const finalPct =
+    100 + totals.spellDamagePct + (melee ? totals.meleeDamagePct : totals.rangedDamagePct);
+
+  const hit = (line: SpellDamageLine, roll: number, critical: boolean) => {
+    const element = ELEMENTS[line.element];
+    const stat = Math.max(0, totals[element.stat]) + totals.power;
+    const fixed = totals.damage + totals[element.damage] + (critical ? totals.criticalDamage : 0);
+    const base = Math.floor((roll * (100 + stat)) / 100) + fixed;
+    return Math.max(0, Math.floor((base * finalPct) / 100));
+  };
+
+  const lines: LineDamage[] = grade.lines.map((line, i) => {
+    const critLine =
+      grade.criticalLines.find((c, j) => j === i && c.element === line.element) ??
+      grade.criticalLines.find((c) => c.element === line.element && c.kind === line.kind);
+    return {
+      element: line.element,
+      kind: line.kind,
+      normal: { min: hit(line, line.min, false), max: hit(line, line.max, false) },
+      critical: critLine
+        ? { min: hit(critLine, critLine.min, true), max: hit(critLine, critLine.max, true) }
+        : null,
+    };
+  });
+
+  const criticalChance = Math.min(100, Math.max(0, grade.criticalChance + totals.critical));
+  const p = criticalChance / 100;
+  const average = lines.reduce((sum, l) => {
+    const normal = (l.normal.min + l.normal.max) / 2;
+    const crit = l.critical ? (l.critical.min + l.critical.max) / 2 : normal;
+    return sum + (1 - p) * normal + p * crit;
+  }, 0);
+
+  return { lines, criticalChance, average: Math.round(average), melee };
 }
