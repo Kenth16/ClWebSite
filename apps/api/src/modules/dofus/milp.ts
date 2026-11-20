@@ -63,6 +63,16 @@ export interface MilpResult {
   candidates: number;
   considered: number;
   ms: number;
+  /** Diagnostic : cellules traitées, programmes résolus, temps solveur cumulé. */
+  stats: {
+    cells: number;
+    busyMs: number;
+    milp: number;
+    relax: number;
+    milpMs: number;
+    milpPruned: number;
+    relaxPruned: number;
+  };
 }
 
 /** Un combo de sorts : sorts lancés et nombre de lancers. */
@@ -132,7 +142,32 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   const started = Date.now();
   const timeLimit = input.timeLimitMs ?? 120_000;
   // Fils de calcul en parallèle si demandé, sinon dans le fil courant.
-  const solver = input.workers ? workerSolver(input.workers) : await inProcessSolver();
+  const pool = input.workers ? workerSolver(input.workers) : await inProcessSolver();
+  // Statistiques : cellules traitées, temps passé dans le solveur (tous fils confondus).
+  const stats = {
+    cells: 0,
+    busyMs: 0,
+    milp: 0,
+    relax: 0,
+    milpMs: 0,
+    milpPruned: 0,
+    relaxPruned: 0,
+  };
+  const solver = {
+    size: pool.size,
+    async solve(lp: string, options: Record<string, unknown>) {
+      const t = Date.now();
+      try {
+        return await pool.solve(lp, options);
+      } finally {
+        stats.busyMs += Date.now() - t;
+        if ("mip_rel_gap" in options) {
+          stats.milp++;
+          stats.milpMs += Date.now() - t;
+        } else stats.relax++;
+      }
+    },
+  };
   const model = buildDamageModel(input);
   const { D, AP, CRIT, CRIT_DMG, MELEE, RANGED, baseVec, prepared, setTiers } = model;
   const apTarget = input.ap;
@@ -387,9 +422,11 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     if (criteria) encode(criteria, x.var, `cond${i}`);
   });
 
-  function buildLps(
-    cell: Cell,
-  ): { constant: number; relaxed: string; lp: (fixed: Map<string, 0 | 1>) => string }[] {
+  function buildLps(cell: Cell): {
+    constant: number;
+    relaxed: string;
+    lp: (fixed: Map<string, 0 | 1>, cutoff?: number) => string;
+  }[] {
     const rows = [...common];
     // Stuffs déjà évalués : interdits (au moins un objet doit changer).
     cell.cuts.forEach((chosenSet, k) => {
@@ -448,9 +485,11 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         // Relaxation continue (variables entre 0 et 1) : borne rapide, souvent suffisante.
         relaxed: [...head, "Bounds", ...binaries.map((b) => ` 0 <= ${b} <= 1`), "End"].join("\n"),
         /** Programme en nombres entiers, avec des objets éventuellement fixés. */
-        lp: (fixed: Map<string, 0 | 1>) =>
+        /** Avec un seuil : seuls les stuffs qui le dépassent sont admis (« au moins »). */
+        lp: (fixed: Map<string, 0 | 1>, cutoff?: number) =>
           [
             ...head,
+            ...(cutoff === undefined ? [] : [row("cutoff", featureTerms(coef), ">=", cutoff)]),
             ...(fixed.size > 0 ? ["Bounds", ...[...fixed].map(([v, x]) => ` ${v} = ${x}`)] : []),
             "Binary",
             ...binaries.map((b) => ` ${b}`),
@@ -520,6 +559,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     );
   /** Traite une cellule : bornes, programmes en nombres entiers, puis coupe ou abandon. */
   async function processCell(cell: Cell): Promise<void> {
+    stats.cells++;
     // Maximum de U dans la cellule : le meilleur des programmes (un par combo).
     let cellUpper = -Infinity;
     let chosen: Set<number> | null = null;
@@ -528,7 +568,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     // 1. Relaxation continue de chaque combo : borne rapide, souvent suffisante.
     const open: {
       constant: number;
-      lp: (fixed: Map<string, 0 | 1>) => string;
+      lp: (fixed: Map<string, 0 | 1>, cutoff?: number) => string;
       relaxUpper: number;
       fixed: Map<string, 0 | 1>;
     }[] = [];
@@ -556,7 +596,10 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       } catch {
         // Pas de conclusion : le programme en nombres entiers tranchera.
       }
-      if (relaxUpper <= bestDamage + eps) continue;
+      if (relaxUpper <= bestDamage + eps) {
+        stats.relaxPruned++;
+        continue;
+      }
       open.push({ constant, lp, relaxUpper, fixed });
     }
     open.sort((a, b) => b.relaxUpper - a.relaxUpper);
@@ -602,26 +645,45 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       let solution: SolveResult;
       let stuff: { picked: Set<number>; valid: boolean };
       try {
-        solution = await solve(true);
+        // D'abord avec le seuil « au moins le meilleur stuff » : prouver qu'aucun
+        // stuff ne le dépasse (Infeasible) est en général bien plus rapide.
+        solution = await solver.solve(lp(fixed, bestDamage + eps - constant), {
+          mip_rel_gap: 1e-9,
+          mip_abs_gap: 1e-6,
+          time_limit: remaining,
+          presolve: "off",
+          output_flag: false,
+        });
         solves++;
-        if (solution.Status === "Target for objective reached") {
-          stuff = readStuff(solution);
-          if (!stuff.valid) {
-            solution = await solve(false);
-            solves++;
-          }
-        }
       } catch {
-        failed = true; // erreur du solveur : rien de sûr sur cette cellule
-        break;
+        // Cas limite numérique : on repasse par la méthode sans seuil.
+        try {
+          solution = await solve(true);
+          solves++;
+          if (solution.Status === "Target for objective reached") {
+            stuff = readStuff(solution);
+            if (!stuff.valid) {
+              solution = await solve(false);
+              solves++;
+            }
+          }
+        } catch {
+          failed = true; // erreur du solveur : rien de sûr sur cette cellule
+          break;
+        }
       }
-      if (solution.Status === "Infeasible") continue;
+      if (solution.Status === "Infeasible") {
+        stats.milpPruned++;
+        continue;
+      }
+      // Cible atteinte : on sait seulement qu'on peut dépasser le meilleur ; la borne
+      // de la cellule reste celle de la relaxation.
       const targetReached = solution.Status === "Target for objective reached";
       if (solution.Status !== "Optimal" && !targetReached) {
         failed = true;
         break;
       }
-      const upper = solution.ObjectiveValue + constant;
+      const upper = targetReached ? relaxBound : solution.ObjectiveValue + constant;
       stuff = readStuff(solution);
       if (!stuff.valid) {
         // Solution inattendue (même « optimale ») : on ne conclut rien de faux.
@@ -657,7 +719,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     const cut = (lo: number, hi: number, at: number, wide: number) =>
       hi - lo > wide ? Math.floor((lo + hi) / 2) : Math.min(at, hi);
     pctDims.forEach((d, k) => {
-      const value = cut(cell.pctLo[k]!, cell.pctHi[k]!, total(d), 4);
+      const value = cut(cell.pctLo[k]!, cell.pctHi[k]!, total(d), 2);
       if (value >= cell.pctHi[k]!) return;
       const tighter = { ...cell, pctHi: cell.pctHi.map((x, j) => (j === k ? value : x)) };
       const gain = here - upperAt(gear, tighter);
@@ -671,7 +733,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         };
       }
     });
-    const crit = cut(Math.max(cell.critLo, 0), cell.critHi, total(CRIT), 8);
+    const crit = cut(Math.max(cell.critLo, 0), cell.critHi, total(CRIT), 4);
     if (crit < cell.critHi) {
       const gain = here - upperAt(gear, { ...cell, critHi: crit });
       if (!bestSplit || gain > (bestSplit as { gain: number }).gain) {
@@ -734,5 +796,6 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     candidates: cands.length,
     considered: model.considered,
     ms: Date.now() - started,
+    stats,
   };
 }

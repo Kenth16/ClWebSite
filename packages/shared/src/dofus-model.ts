@@ -55,6 +55,17 @@ export interface Cand {
   /** Caractéristiques visées par des conditions : apport minimal / maximal (panoplie comprise). */
   rawLo: number[];
   rawHi: number[];
+  /** Sens imposés par ses propres conditions (« PA < 12 » : les PA ne doivent pas monter). */
+  own: Directions;
+  item: DofusItem;
+}
+
+/** Caractéristiques qui ne doivent pas monter / baisser, et nombre de panoplies actives. */
+interface Directions {
+  rise: Set<StatKey>;
+  fall: Set<StatKey>;
+  setsRise: boolean;
+  setsFall: boolean;
 }
 
 export function buildDamageModel(input: DamageModelInput) {
@@ -248,28 +259,32 @@ export function buildDamageModel(input: DamageModelInput) {
     totalRange.set(stat, range);
     return range;
   };
-  const decide = (t: CriteriaTree): CriteriaTree => {
-    if (t.kind === "and" || t.kind === "or") return { ...t, children: t.children.map(decide) };
-    if (t.kind !== "stat") return t;
-    const [lo, hi] = rangeOf(t.stat);
-    const always =
-      t.op === "<"
-        ? hi < t.value
-        : t.op === ">"
-          ? lo > t.value
-          : t.op === "="
-            ? lo === hi && lo === t.value
-            : hi < t.value || lo > t.value;
-    const never =
-      t.op === "<"
-        ? lo >= t.value
-        : t.op === ">"
-          ? hi <= t.value
-          : t.op === "="
-            ? t.value < lo || t.value > hi
-            : lo === hi && lo === t.value;
-    return always ? { kind: "true" } : never ? { kind: "false" } : t;
+  const decideWith = (range: (stat: StatKey) => [number, number]) => {
+    const decide = (t: CriteriaTree): CriteriaTree => {
+      if (t.kind === "and" || t.kind === "or") return { ...t, children: t.children.map(decide) };
+      if (t.kind !== "stat") return t;
+      const [lo, hi] = range(t.stat);
+      const always =
+        t.op === "<"
+          ? hi < t.value
+          : t.op === ">"
+            ? lo > t.value
+            : t.op === "="
+              ? lo === hi && lo === t.value
+              : hi < t.value || lo > t.value;
+      const never =
+        t.op === "<"
+          ? lo >= t.value
+          : t.op === ">"
+            ? hi <= t.value
+            : t.op === "="
+              ? t.value < lo || t.value > hi
+              : lo === hi && lo === t.value;
+      return always ? { kind: "true" } : never ? { kind: "false" } : t;
+    };
+    return decide;
   };
+  const decide = decideWith(rangeOf);
   const simplified = new Map<number, CriteriaTree | null>();
   for (const item of usable) {
     if (item.criteria) simplified.set(item.id, simplifyCriteria(decide(item.criteria), {}));
@@ -277,25 +292,29 @@ export function buildDamageModel(input: DamageModelInput) {
   const criteriaOf = (item: DofusItem): CriteriaTree | null =>
     simplified.has(item.id) ? simplified.get(item.id)! : (item.criteria ?? null);
 
-  const mustNotRise = new Set<StatKey>();
-  const mustNotFall = new Set<StatKey>();
-  let setsMustNotRise = false;
-  let setsMustNotFall = false;
-  const scan = (t: CriteriaTree) => {
-    if (t.kind === "and" || t.kind === "or") t.children.forEach(scan);
-    else if (t.kind === "stat") {
-      if (t.op !== ">") mustNotRise.add(t.stat);
-      if (t.op !== "<") mustNotFall.add(t.stat);
-    } else if (t.kind === "sets") {
-      if (t.op !== ">") setsMustNotRise = true;
-      if (t.op !== "<") setsMustNotFall = true;
-    }
-  };
-  for (const item of usable) {
-    const tree = criteriaOf(item);
+  /** Sens qu'une condition impose aux totaux du stuff. */
+  const directionsOf = (tree: CriteriaTree | null): Directions => {
+    const d: Directions = { rise: new Set(), fall: new Set(), setsRise: false, setsFall: false };
+    const scan = (t: CriteriaTree) => {
+      if (t.kind === "and" || t.kind === "or") t.children.forEach(scan);
+      else if (t.kind === "stat") {
+        if (t.op !== ">") d.rise.add(t.stat);
+        if (t.op !== "<") d.fall.add(t.stat);
+      } else if (t.kind === "sets") {
+        if (t.op !== ">") d.setsRise = true;
+        if (t.op !== "<") d.setsFall = true;
+      }
+    };
     if (tree && tree.kind !== "false") scan(tree);
+    return d;
+  };
+  const allStats = new Set<StatKey>();
+  for (const item of usable) {
+    const d = directionsOf(criteriaOf(item));
+    d.rise.forEach((x) => allStats.add(x));
+    d.fall.forEach((x) => allStats.add(x));
   }
-  const condStats = [...new Set([...mustNotRise, ...mustNotFall])];
+  const condStats = [...allStats];
   const rawOf = (effects: readonly { stat: StatKey | null; value: number }[], stat: StatKey) =>
     effects.reduce((sum, e) => (e.stat === stat ? sum + e.value : sum), 0);
   /** Apport brut d'un objet aux caractéristiques des conditions, bonus de panoplie au pire / au mieux. */
@@ -339,17 +358,39 @@ export function buildDamageModel(input: DamageModelInput) {
    * baisser aucune caractéristique bornée par le bas, et ne change pas le
    * nombre de panoplies actives dans le mauvais sens.
    */
+  /**
+   * Conditions encore en jeu : comptées sur les seuls objets candidats (un
+   * objet écarté ne fera partie d'aucun stuff étudié, sa condition non plus).
+   */
+  let counts = {
+    rise: new Map<StatKey, number>(),
+    fall: new Map<StatKey, number>(),
+    setsRise: 0,
+    setsFall: 0,
+  };
+  const countDirections = (cands: Cand[]) => {
+    counts = { rise: new Map(), fall: new Map(), setsRise: 0, setsFall: 0 };
+    for (const c of cands) {
+      c.own.rise.forEach((x) => counts.rise.set(x, (counts.rise.get(x) ?? 0) + 1));
+      c.own.fall.forEach((x) => counts.fall.set(x, (counts.fall.get(x) ?? 0) + 1));
+      if (c.own.setsRise) counts.setsRise++;
+      if (c.own.setsFall) counts.setsFall++;
+    }
+  };
   const safeSwap = (a: Cand, b: Cand | null) => {
     if (b && b.criteriaKey !== null && b.criteriaKey !== a.criteriaKey) return false;
+    // Les conditions de a ne comptent plus une fois a retiré… sauf si b a les mêmes.
+    const mine = b && b.criteriaKey !== null ? null : a.own;
+    const active = (n: number | undefined, isMine: boolean) => (n ?? 0) - (isMine ? 1 : 0) > 0;
     for (let k = 0; k < condStats.length; k++) {
       const stat = condStats[k]!;
       const bLo = b ? b.rawLo[k]! : 0;
       const bHi = b ? b.rawHi[k]! : 0;
-      if (mustNotRise.has(stat) && bHi > a.rawLo[k]!) return false;
-      if (mustNotFall.has(stat) && bLo < a.rawHi[k]!) return false;
+      if (active(counts.rise.get(stat), !!mine?.rise.has(stat)) && bHi > a.rawLo[k]!) return false;
+      if (active(counts.fall.get(stat), !!mine?.fall.has(stat)) && bLo < a.rawHi[k]!) return false;
     }
-    if (setsMustNotRise && b && b.set >= 0) return false;
-    if (setsMustNotFall && a.set >= 0) return false;
+    if (active(counts.setsRise, !!mine?.setsRise) && b && b.set >= 0) return false;
+    if (active(counts.setsFall, !!mine?.setsFall) && a.set >= 0) return false;
     return true;
   };
 
@@ -385,6 +426,8 @@ export function buildDamageModel(input: DamageModelInput) {
       proxy,
       conditional: !!criteria,
       criteriaKey: criteria ? JSON.stringify(criteria) : null,
+      own: directionsOf(criteria),
+      item,
       ...rawRange(item, set),
     });
     byFamily.set(item.family, list);
@@ -402,26 +445,86 @@ export function buildDamageModel(input: DamageModelInput) {
   const zero = new Float64Array(D);
 
   // Dominance : b remplace a sans perte si son apport minimal ≥ l'apport maximal de a.
-  for (const [family, list] of byFamily) {
-    const k = slotsOf(family);
-    const kept = list.filter((a) => {
-      // L'emplacement vide fait au moins aussi bien.
-      if (geq(zero, a.hi) && safeSwap(a, null)) return false;
-      let plain = 0;
-      let prysma = 0;
-      for (const b of list) {
-        if (b === a || (a.set >= 0 && b.set === a.set)) continue;
-        if (!geq(b.lo, a.hi) || !safeSwap(a, b)) continue;
-        // Égalité parfaite : on n'en garde qu'un (le plus petit identifiant).
-        if (equal(b.lo, a.hi) && equal(a.lo, b.hi) && b.id > a.id) continue;
-        if (b.prysma) prysma++;
-        else plain++;
+  // On recommence tant que des objets tombent : moins de candidats, moins de
+  // conditions en jeu, donc de nouveaux remplacements sûrs.
+  for (let round = 0; round < 10; round++) {
+    let removed = 0;
+    // Bornes des totaux recalculées sur les seuls candidats : plus serrées, elles
+    // rendent certaines conditions toujours vraies ou impossibles.
+    const current = [...byFamily.values()].flat();
+    const ranges = new Map<StatKey, [number, number]>();
+    const memberCount = new Map<number, number>();
+    for (const c of current)
+      if (c.set >= 0) memberCount.set(c.set, (memberCount.get(c.set) ?? 0) + 1);
+    const rangeNow = (stat: StatKey): [number, number] => {
+      const known = ranges.get(stat);
+      if (known) return known;
+      let lo = input.base[stat] ?? 0;
+      let hi = lo;
+      for (const [family, list] of byFamily) {
+        const k = slotsOf(family);
+        const values = list.map((c) => rawOfItem(c.item.effects, stat));
+        lo += values
+          .filter((v) => v < 0)
+          .sort((a, b) => a - b)
+          .slice(0, k)
+          .reduce((a, b) => a + b, 0);
+        hi += values
+          .filter((v) => v > 0)
+          .sort((a, b) => b - a)
+          .slice(0, k)
+          .reduce((a, b) => a + b, 0);
       }
-      if (a.prysma && prysma > 0) return false;
-      return plain + Math.min(prysma, 1) < k;
-    });
-    kept.sort((a, b) => b.proxy - a.proxy);
-    byFamily.set(family, kept);
+      for (const [set, n] of memberCount) {
+        if (n < 2) continue;
+        const values = Object.values(input.sets[set]!.bonuses).map((e) => rawOfItem(e, stat));
+        lo += Math.min(0, ...values);
+        hi += Math.max(0, ...values);
+      }
+      if (stat === "ap") lo = Math.max(lo, apTarget);
+      const range: [number, number] = [lo, hi];
+      ranges.set(stat, range);
+      return range;
+    };
+    const decideNow = decideWith(rangeNow);
+    for (const [family, list] of byFamily) {
+      const kept = list.filter((c) => {
+        if (!c.item.criteria) return true;
+        const tree = simplifyCriteria(decideNow(c.item.criteria), {});
+        simplified.set(c.id, tree);
+        if (tree?.kind === "false") return false;
+        c.conditional = !!tree;
+        c.criteriaKey = tree ? JSON.stringify(tree) : null;
+        c.own = directionsOf(tree);
+        return true;
+      });
+      removed += list.length - kept.length;
+      byFamily.set(family, kept);
+    }
+    countDirections([...byFamily.values()].flat());
+    for (const [family, list] of byFamily) {
+      const k = slotsOf(family);
+      const kept = list.filter((a) => {
+        // L'emplacement vide fait au moins aussi bien.
+        if (geq(zero, a.hi) && safeSwap(a, null)) return false;
+        let plain = 0;
+        let prysma = 0;
+        for (const b of list) {
+          if (b === a || (a.set >= 0 && b.set === a.set)) continue;
+          if (!geq(b.lo, a.hi) || !safeSwap(a, b)) continue;
+          // Égalité parfaite : on n'en garde qu'un (le plus petit identifiant).
+          if (equal(b.lo, a.hi) && equal(a.lo, b.hi) && b.id > a.id) continue;
+          if (b.prysma) prysma++;
+          else plain++;
+        }
+        if (a.prysma && prysma > 0) return false;
+        return plain + Math.min(prysma, 1) < k;
+      });
+      removed += list.length - kept.length;
+      kept.sort((a, b) => b.proxy - a.proxy);
+      byFamily.set(family, kept);
+    }
+    if (removed === 0) break;
   }
 
   const itemById = new Map(input.items.map((i) => [i.id, i]));

@@ -271,7 +271,7 @@ export function fastPerCast(s: TurnSpell, t: (k: StatKey) => number): number {
 
 /**
  * Objets de maître du jeu ou de test, interdits en jeu normal : jamais proposés
- * par l'optimiseur. Les objets dont le nom contient « (MJ) » le sont aussi.
+ * par l'optimiseur. Ceux dont le nom contient « (MJ) » ou « Ankarton » aussi.
  */
 export const EXCLUDED_ITEMS: readonly { id: number; name: string }[] = [
   { id: 2154, name: "Bague De Sendar" },
@@ -282,10 +282,15 @@ export const EXCLUDED_ITEMS: readonly { id: number; name: string }[] = [
   { id: 9031, name: "Annobusé de Maître Jarbo" },
 ];
 const EXCLUDED_IDS = new Set(EXCLUDED_ITEMS.map((i) => i.id));
+/**
+ * Exclus par leur nom : objets de MJ « (MJ) » et Panoplie Ankarton (8 objets,
+ * pratiquement impossibles à obtenir en jeu).
+ */
+const EXCLUDED_NAMES = /\(MJ\)|Ankarton/i;
 
 /** L'objet est-il autorisé (pas un objet de MJ) ? */
 export function isAllowedItem(item: Pick<DofusItem, "id" | "name">): boolean {
-  return !EXCLUDED_IDS.has(item.id) && !/\(MJ\)/i.test(item.name);
+  return !EXCLUDED_IDS.has(item.id) && !EXCLUDED_NAMES.test(item.name);
 }
 
 /** Groupe d'objets dont un seul exemplaire peut être porté (une seule Prysmaradite). */

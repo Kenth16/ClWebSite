@@ -227,6 +227,7 @@ describe("dégâts d'un tour", () => {
     expect(r.slots).toEqual({ amulet: 3 });
     expect(isAllowedItem({ id: 841, name: "Anneau de Satisfaction" })).toBe(true);
     expect(isAllowedItem({ id: 8659, name: "Sangle Huée" })).toBe(true);
+    expect(isAllowedItem({ id: 1, name: "Goultard Ankarton" })).toBe(false);
   });
 
   it("donne la part des éléments des sorts de la classe", () => {
