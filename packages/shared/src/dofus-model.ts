@@ -14,6 +14,7 @@ import {
   type SlotId,
   type StatKey,
 } from "./dofus";
+import { criteriaMet } from "./dofus-criteria";
 import {
   bestComboDamage,
   damageProxyWeights,
@@ -47,6 +48,8 @@ export interface Cand {
   /** Apport + part maximale du bonus de panoplie par objet porté (pour la borne). */
   up: Vec;
   proxy: number;
+  /** L'objet a des conditions (il ne peut alors pas servir à en écarter un autre). */
+  conditional: boolean;
 }
 
 export function buildDamageModel(input: DamageModelInput) {
@@ -108,6 +111,8 @@ export function buildDamageModel(input: DamageModelInput) {
           damage: damageFeature.get(line.element)!,
           normal: (line.min + line.max) / 2,
           crit: critLine ? (critLine.min + critLine.max) / 2 : null,
+          rolls: [line.min, line.max],
+          critRolls: critLine ? [critLine.min, critLine.max] : null,
         };
       });
       return [s, { pct: grade.range <= 1 ? MELEE : RANGED, critBase: grade.criticalChance, lines }];
@@ -115,8 +120,11 @@ export function buildDamageModel(input: DamageModelInput) {
   );
 
   /**
-   * Dégâts du tour pour un vecteur d'équipement (base ajoutée ici). Croît avec
-   * chaque caractéristique regroupée : c'est ce qui rend la borne valable.
+   * Dégâts du tour pour un vecteur d'équipement (base ajoutée ici), avec la
+   * formule du jeu : chaque étape est arrondie à l'inférieur, comme dans le
+   * calcul des dégâts du simulateur. Croît avec chaque caractéristique
+   * regroupée, et ne dépasse jamais la version sans arrondi : les bornes des
+   * optimiseurs restent valables.
    */
   function objective(gear: Vec): number {
     const f = (i: number) => (i < 0 ? 0 : gear[i]! + baseVec[i]!);
@@ -126,16 +134,20 @@ export function buildDamageModel(input: DamageModelInput) {
     return bestComboDamage(spells, groups, apTarget, (s) => {
       const p = prepared.get(s)!;
       const chance = Math.min(100, Math.max(0, p.critBase + critical)) / 100;
+      const pct = 100 + f(p.pct);
       let sum = 0;
       for (const line of p.lines) {
-        const scale = 1 + f(line.stat) / 100;
+        const scale = 100 + f(line.stat);
         const fixed = f(line.damage);
-        const normal = line.normal * scale + fixed;
-        const crit =
-          line.crit === null ? normal : Math.max(normal, line.crit * scale + fixed + critDamage);
-        sum += Math.max(0, (1 - chance) * normal + chance * crit);
+        const hit = (roll: number, extra: number) =>
+          Math.max(0, Math.floor(((Math.floor((roll * scale) / 100) + fixed + extra) * pct) / 100));
+        const normal = (hit(line.rolls[0]!, 0) + hit(line.rolls[1]!, 0)) / 2;
+        const crit = line.critRolls
+          ? (hit(line.critRolls[0]!, critDamage) + hit(line.critRolls[1]!, critDamage)) / 2
+          : normal;
+        sum += (1 - chance) * normal + chance * crit;
       }
-      return (sum * (100 + f(p.pct))) / 100;
+      return sum;
     });
   }
 
@@ -188,6 +200,7 @@ export function buildDamageModel(input: DamageModelInput) {
   let considered = 0;
   for (const item of input.items) {
     if (!item.family || item.level > input.level || !isAllowedItem(item)) continue;
+    if (item.criteria?.kind === "false") continue; // jamais portable (ex. autre classe)
     considered++;
     const v = vecOf(item.effects);
     const set = setOfItem.get(item.id) ?? -1;
@@ -205,7 +218,17 @@ export function buildDamageModel(input: DamageModelInput) {
     for (const e of item.effects) if (e.stat) proxy += (proxyWeights[e.stat] ?? 0) * e.value;
     if (set >= 0) proxy += 50; // à explorer tôt : peut compléter une panoplie
     const list = byFamily.get(item.family) ?? [];
-    list.push({ id: item.id, set, prysma: /prysmaradite/i.test(item.type), v, hi, lo, up, proxy });
+    list.push({
+      id: item.id,
+      set,
+      prysma: /prysmaradite/i.test(item.type),
+      v,
+      hi,
+      lo,
+      up,
+      proxy,
+      conditional: !!item.criteria,
+    });
     byFamily.set(item.family, list);
   }
 
@@ -228,7 +251,8 @@ export function buildDamageModel(input: DamageModelInput) {
       let plain = 0;
       let prysma = 0;
       for (const b of list) {
-        if (b === a || (a.set >= 0 && b.set === a.set)) continue;
+        // Un objet à conditions peut être impossible à porter : il n'écarte personne.
+        if (b === a || b.conditional || (a.set >= 0 && b.set === a.set)) continue;
         if (!geq(b.lo, a.hi)) continue;
         // Égalité parfaite : on n'en garde qu'un (le plus petit identifiant).
         if (equal(b.lo, a.hi) && equal(a.lo, b.hi) && b.id > a.id) continue;
@@ -262,7 +286,43 @@ export function buildDamageModel(input: DamageModelInput) {
     return objective(gear);
   }
 
+  /**
+   * Le stuff respecte-t-il les conditions de tous ses objets ? Totaux bruts :
+   * base (points, parchemins, PA, PM) + objets + bonus de panoplie.
+   */
+  function feasible(slots: Partial<Record<SlotId, number>>): boolean {
+    const items = Object.values(slots)
+      .map((id) => (id !== undefined ? itemById.get(id) : undefined))
+      .filter((i): i is DofusItem => !!i);
+    const totals = new Map<StatKey, number>(Object.entries(input.base) as [StatKey, number][]);
+    const add = (effects: DofusItem["effects"]) => {
+      for (const e of effects) if (e.stat) totals.set(e.stat, (totals.get(e.stat) ?? 0) + e.value);
+    };
+    items.forEach((i) => add(i.effects));
+    const counts = new Map<number, number>();
+    for (const i of items) {
+      const s = setOfItem.get(i.id);
+      if (s !== undefined) counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    let activeSets = 0;
+    for (const [s, n] of counts) {
+      if (n < 2) continue;
+      activeSets++;
+      const bonuses = input.sets[s]!.bonuses;
+      const tier = Math.max(
+        ...Object.keys(bonuses)
+          .map(Number)
+          .filter((k) => k <= n),
+        0,
+      );
+      add(bonuses[tier] ?? []);
+    }
+    const context = { total: (k: StatKey) => totals.get(k) ?? 0, activeSets };
+    return items.every((i) => criteriaMet(i.criteria, context));
+  }
+
   return {
+    feasible,
     D,
     contrib,
     AP,

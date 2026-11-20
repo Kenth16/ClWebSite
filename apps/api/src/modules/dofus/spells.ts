@@ -180,6 +180,30 @@ export class DofusDbClient {
     });
   }
 
+  /**
+   * Conditions brutes des objets (« CP<12&CM<6 »…), par identifiant : mêmes
+   * identifiants que DofusDude. Chargées par paquets de 50, puis gardées en cache.
+   */
+  itemCriteria(ids: readonly number[]): Promise<Map<number, string>> {
+    const sorted = [...new Set(ids)].sort((a, b) => a - b);
+    return this.cached(`criteria:${sorted.length}:${sorted[0]}:${sorted.at(-1)}`, async () => {
+      const result = new Map<number, string>();
+      for (let i = 0; i < sorted.length; i += PAGE) {
+        const chunk = sorted.slice(i, i + PAGE);
+        const page = await this.get<{ id: number; criterions?: string }>("/items", [
+          ["$limit", String(PAGE)],
+          ["$select[]", "id"],
+          ["$select[]", "criterions"],
+          ...chunk.map((id): [string, string] => ["id[$in][]", String(id)]),
+        ]);
+        for (const item of page.data) {
+          if (item.criterions) result.set(item.id, item.criterions);
+        }
+      }
+      return result;
+    });
+  }
+
   /** Sorts d'une classe, avec tous leurs grades. */
   spells(breedId: number): Promise<DofusSpell[]> {
     return this.cached(`spells:${breedId}`, async () => {

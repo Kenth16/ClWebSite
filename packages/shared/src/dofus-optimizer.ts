@@ -216,7 +216,8 @@ export function bestComboDamage(
 
 /** Combo exact (formule complète du calcul des dégâts) pour des caractéristiques finales. */
 export function turnCombo(totals: StatTotals, spells: readonly TurnSpell[], ap: number): TurnCombo {
-  const best = bestCombo(spells, ap, (s) => computeSpellDamage(totals, s.grade).average);
+  // Combo choisi et total sur les moyennes exactes (comme l'optimiseur), puis arrondis.
+  const best = bestCombo(spells, ap, (s) => computeSpellDamage(totals, s.grade).exactAverage);
   const casts = best.picks
     .map(({ spell, casts }) => ({
       spellId: spell.spell.id,

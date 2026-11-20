@@ -1,3 +1,4 @@
+import type { CriteriaTree } from "./dofus-criteria";
 import { z } from "zod";
 
 /**
@@ -182,6 +183,8 @@ export interface DofusItem {
   set: { id: number; name: string } | null;
   /** Famille d'emplacement de l'objet (d'après son type), si connue. */
   family?: SlotFamily | null;
+  /** Conditions qui dépendent du stuff (caractéristiques, panoplies, classe), si connues. */
+  criteria?: CriteriaTree | null;
 }
 
 /** Panoplie dans une liste de recherche. */
@@ -780,6 +783,8 @@ export interface SpellDamage {
   criticalChance: number;
   /** Dégâts moyens par lancer, critiques compris (cible sans résistance). */
   average: number;
+  /** Même moyenne, sans l'arrondi final (pour additionner plusieurs lancers). */
+  exactAverage: number;
   /** Portée considérée : mêlée (portée 1) ou distance. */
   melee: boolean;
 }
@@ -825,5 +830,5 @@ export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): Spell
     return sum + (1 - p) * normal + p * crit;
   }, 0);
 
-  return { lines, criticalChance, average: Math.round(average), melee };
+  return { lines, criticalChance, average: Math.round(average), exactAverage: average, melee };
 }

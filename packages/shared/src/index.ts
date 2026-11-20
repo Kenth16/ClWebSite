@@ -12,3 +12,4 @@ export * from "./dofus";
 export * from "./dofus-optimizer";
 export * from "./dofus-exact";
 export * from "./dofus-model";
+export * from "./dofus-criteria";

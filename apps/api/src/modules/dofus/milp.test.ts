@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   activeSetBonuses,
   bestComboDamage,
-  fastPerCast,
+  STATS,
+  computeSpellDamage,
+  type SpellGrade,
+  type StatTotals,
   turnSpells,
   type DofusItem,
   type DofusSet,
@@ -10,6 +13,7 @@ import {
   type StatKey,
   type StatWeights,
 } from "@kenpai/shared";
+import { criteriaMet, parseCriteria } from "@kenpai/shared";
 import { optimizeTurnDamageMilp } from "./milp";
 
 const item = (
@@ -68,6 +72,20 @@ function rng(seed: number) {
   };
 }
 
+/** Dégâts moyens exacts d'un lancer (formule du jeu, arrondis à l'inférieur, sans arrondir la moyenne). */
+function exactPerCast(t: (k: StatKey) => number, grade: SpellGrade): number {
+  const totals = Object.fromEntries(
+    Object.keys(STATS).map((k) => [k, t(k as StatKey)]),
+  ) as StatTotals;
+  const r = computeSpellDamage(totals, grade);
+  const p = r.criticalChance / 100;
+  return r.lines.reduce((sum, l) => {
+    const normal = (l.normal.min + l.normal.max) / 2;
+    const crit = l.critical ? (l.critical.min + l.critical.max) / 2 : normal;
+    return sum + (1 - p) * normal + p * crit;
+  }, 0);
+}
+
 describe("optimiseur MILP", () => {
   const base: StatWeights = { ap: 7, strength: 300 };
   const raw = [
@@ -87,11 +105,16 @@ describe("optimiseur MILP", () => {
     for (const b of activeSetBonuses(items, sets)) add(b.effects);
     if (Math.min(totals.get("ap") ?? 0, 12) < 9) return -Infinity;
     const t = (k: StatKey) => totals.get(k) ?? 0;
-    return bestComboDamage(spells, groups, 9, (s) => fastPerCast(s, t));
+    // Conditions des objets, vérifiées indépendamment.
+    const activeSets = sets.filter(
+      (set) => items.filter((i) => set.itemIds.includes(i.id)).length >= 2,
+    ).length;
+    if (!items.every((i) => criteriaMet(i.criteria, { total: t, activeSets }))) return -Infinity;
+    return bestComboDamage(spells, groups, 9, (s) => exactPerCast(t, s.grade));
   }
 
   it("retrouve l'optimum d'une recherche exhaustive (panoplies, % dommages, critique)", async () => {
-    for (let seed = 1; seed <= 12; seed++) {
+    for (let seed = 1; seed <= 30; seed++) {
       const r = rng(seed);
       const stat = (): Partial<Record<StatKey, number>> => ({
         strength: Math.floor(r() * 120) - 20,
@@ -124,6 +147,12 @@ describe("optimiseur MILP", () => {
           ],
         },
       };
+      // Quelques conditions au hasard (PA, caractéristiques, « ou », bonus de panoplie < 2).
+      const conditions = ["CP<9", "CS>330", "pk<2", "CC<5|CS>360", "CP<10&CS>310", "CM>2"];
+      const pick = () => parseCriteria(conditions[Math.floor(r() * conditions.length)]);
+      hats[1] = { ...hats[1]!, criteria: pick() };
+      rings[2] = { ...rings[2]!, criteria: pick() };
+      cloaks[0] = { ...cloaks[0]!, criteria: pick() };
       const items = [...hats, ...rings, ...cloaks];
 
       let best = -Infinity;
@@ -148,7 +177,70 @@ describe("optimiseur MILP", () => {
         sets: [set],
       });
       expect(result.proven).toBe(true);
-      expect(result.damage).toBeCloseTo(best, 5);
+      if (best === -Infinity) expect(result.damage).toBe(-Infinity);
+      else expect(result.damage).toBeCloseTo(best, 5);
     }
+  }, 60_000);
+
+  it("respecte les conditions des objets (PA, caractéristiques, bonus de panoplie < 2)", async () => {
+    // Coiffe puissante mais « PA < 9 » ; anneau très fort mais « Force > 360 » ;
+    // trophée « pk<2 » qui interdit de cumuler deux bonus de panoplie.
+    const withSet = (i: DofusItem, set: number) => ({ ...i, set: { id: set, name: "Panoplie" } });
+    const items: DofusItem[] = [
+      { ...item(1, "hat", { strength: 200, ap: 1 }), criteria: parseCriteria("CP<9") },
+      item(2, "hat", { strength: 80 }),
+      item(3, "cloak", { ap: 1 }),
+      { ...item(4, "ring", { strength: 150 }), criteria: parseCriteria("CS>360") },
+      item(5, "ring", { strength: 40 }),
+      item(6, "ring", { strength: 30 }),
+      withSet(item(7, "amulet", { strength: 10 }), 60),
+      withSet(item(8, "belt", { strength: 10 }), 60),
+      withSet(item(9, "boots", { strength: 10 }), 61),
+      withSet(item(10, "shield", { strength: 10 }), 61),
+      { ...item(11, "dofus", { strength: 120 }), criteria: parseCriteria("pk<2") },
+      item(12, "dofus", { strength: 5 }),
+    ];
+    const sets: DofusSet[] = [60, 61].map((id) => ({
+      id,
+      name: "Panoplie",
+      itemIds: id === 60 ? [7, 8] : [9, 10],
+      bonuses: { 2: [{ stat: "strength", value: 70, text: "" }] },
+    }));
+    const result = await optimizeTurnDamageMilp({
+      level: 200,
+      elements: ["earth"],
+      ap: 9,
+      base,
+      spells,
+      items,
+      sets,
+    });
+    expect(result.proven).toBe(true);
+    const chosen = new Set(Object.values(result.slots));
+    // PA : 7 de base, il en faut 9 → coiffe 1 (PA < 9 impossible avec 9 PA) exclue :
+    // la cape PA et… il manque un PA : pas de stuff possible sans la coiffe.
+    expect(result.damage).toBe(-Infinity);
+    expect(chosen.size).toBe(0);
+
+    // Avec 8 PA visés : la coiffe 1 est portable (8 < 9).
+    const spells8 = turnSpells(raw, 100, ["earth"], 8);
+    const r8 = await optimizeTurnDamageMilp({
+      level: 200,
+      elements: ["earth"],
+      ap: 8,
+      base,
+      spells: spells8,
+      items,
+      sets,
+    });
+    expect(r8.proven).toBe(true);
+    const s8 = new Set(Object.values(r8.slots));
+    expect(s8.has(1)).toBe(true);
+    // Force : 300 + 200 + 40 + 30 + … : l'anneau « Force > 360 » doit vraiment avoir plus de 360.
+    // Trophée pk<2 + deux panoplies complètes : interdit.
+    const activeSets = [60, 61].filter((id) =>
+      sets.find((s) => s.id === id)!.itemIds.every((i) => s8.has(i)),
+    ).length;
+    if (s8.has(11)) expect(activeSets).toBeLessThan(2);
   }, 60_000);
 });

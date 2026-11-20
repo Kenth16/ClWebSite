@@ -25,6 +25,8 @@ import {
   type SlotFamily,
   type SlotId,
   type TurnSpell,
+  type CriteriaTree,
+  type StatKey,
   type Vec,
 } from "@kenpai/shared";
 
@@ -119,6 +121,8 @@ interface Cell {
   cdPositive: boolean;
   /** Borne supérieure de dégâts déjà connue (cellule mère), pour l'ordre de traitement. */
   upper: number;
+  /** Stuffs déjà évalués, interdits dans cette cellule (indices des objets). */
+  cuts: number[][];
 }
 
 const fmt = (x: number) => {
@@ -281,10 +285,124 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     ...sets.flatMap((s) => s.tiers.map((_, n) => `${s.var}_${n}`)),
   ];
 
+  // ── Conditions des objets ───────────────────────────────────────────────
+  // « Si l'objet est porté, alors total ≤ / ≥ valeur » : contrainte linéaire
+  // désactivée quand l'objet n'est pas porté (grand M). Les « ou » reçoivent
+  // une variable par branche (au moins une branche respectée).
+  const itemById = new Map(input.items.map((i) => [i.id, i]));
+  const rawStat = (effects: readonly { stat: string | null; value: number }[], stat: StatKey) =>
+    effects.reduce((sum, e) => (e.stat === stat ? sum + e.value : sum), 0);
+  /** Bonus brut d'une panoplie portée à n objets (palier le plus haut atteint). */
+  const setBonusAt = (set: number, n: number) => {
+    if (n < 2) return [];
+    const bonuses = input.sets[set]!.bonuses;
+    const tier = Math.max(
+      0,
+      ...Object.keys(bonuses)
+        .map(Number)
+        .filter((k) => k <= n),
+    );
+    return bonuses[tier] ?? [];
+  };
+  /** Total d'une caractéristique : termes (objets, panoplies), constante, ampleur maximale. */
+  function statExpression(stat: StatKey) {
+    const terms: string[] = [];
+    let size = 0;
+    for (const x of cands) {
+      const w = rawStat(itemById.get(x.c.id)?.effects ?? [], stat);
+      if (w !== 0) {
+        terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${x.var}`);
+        size += Math.abs(w);
+      }
+    }
+    for (const s of sets) {
+      let largest = 0;
+      s.tiers.forEach((_, n) => {
+        const w = rawStat(setBonusAt(s.set, n), stat);
+        if (w !== 0) terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${s.var}_${n}`);
+        largest = Math.max(largest, Math.abs(w));
+      });
+      size += largest;
+    }
+    return { terms, constant: input.base[stat] ?? 0, size };
+  }
+  /** Nombre de panoplies au bonus actif : Σ (1 − u_0 − u_1). */
+  function activeSetsExpression() {
+    const terms = sets.flatMap((s) => [`- ${s.var}_0`, `- ${s.var}_1`]);
+    return { terms, constant: sets.length, size: sets.length };
+  }
+  let orCount = 0;
+  function encode(tree: CriteriaTree, active: string, name: string) {
+    switch (tree.kind) {
+      case "true":
+      case "breed":
+        return;
+      case "false":
+        common.push(row(`${name}_no`, [`+ ${active}`], "<=", 0));
+        return;
+      case "and":
+        tree.children.forEach((c, k) => encode(c, active, `${name}a${k}`));
+        return;
+      case "or": {
+        const branches = tree.children.map(() => `o${orCount++}`);
+        binaries.push(...branches);
+        common.push(row(`${name}_or`, [...branches.map((b) => `+ ${b}`), `- ${active}`], ">=", 0));
+        tree.children.forEach((c, k) => encode(c, branches[k]!, `${name}o${k}`));
+        return;
+      }
+      case "stat":
+      case "sets": {
+        if (tree.op === "!") return; // « différent de » : rare, laissé de côté
+        const { terms, constant, size } =
+          tree.kind === "stat" ? statExpression(tree.stat) : activeSetsExpression();
+        const bigM = size + Math.abs(constant) + Math.abs(tree.value) + 2;
+        if (tree.op === "<" || tree.op === "=") {
+          const limit = tree.op === "<" ? tree.value - 1 : tree.value;
+          common.push(
+            row(
+              `${name}_le`,
+              [...terms, `+ ${fmt(bigM)} ${active}`],
+              "<=",
+              limit - constant + bigM,
+            ),
+          );
+        }
+        if (tree.op === ">" || tree.op === "=") {
+          const limit = tree.op === ">" ? tree.value + 1 : tree.value;
+          common.push(
+            row(
+              `${name}_ge`,
+              [...terms, `- ${fmt(bigM)} ${active}`],
+              ">=",
+              limit - constant - bigM,
+            ),
+          );
+        }
+        return;
+      }
+    }
+  }
+  cands.forEach((x, i) => {
+    const criteria = itemById.get(x.c.id)?.criteria;
+    if (criteria) encode(criteria, x.var, `cond${i}`);
+  });
+
   function buildLps(
     cell: Cell,
   ): { constant: number; relaxed: string; lp: (fixed: Map<string, 0 | 1>) => string }[] {
     const rows = [...common];
+    // Stuffs déjà évalués : interdits (au moins un objet doit changer).
+    cell.cuts.forEach((chosenSet, k) => {
+      const inSet = new Set(chosenSet);
+      rows.push(
+        row(
+          `cut${k}`,
+          cands.map((x, i) => (inSet.has(i) ? `+ ${x.var}` : `- ${x.var}`)),
+          "<=",
+          chosenSet.length - 1,
+        ),
+      );
+    });
     pctDims.forEach((d, k) => {
       const terms = featureTerms(unit(d));
       rows.push(row(`pct${k}_lo`, terms, ">=", cell.pctLo[k]! - baseVec[d]!));
@@ -372,7 +490,8 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   // ── Recherche par cellules ──────────────────────────────────────────────
   let bestDamage = -Infinity;
   let bestSlots: Partial<Record<SlotId, number>> = {};
-  if (input.initial) {
+  // Le stuff de départ ne sert que s'il respecte toutes les conditions.
+  if (input.initial && model.feasible(input.initial)) {
     bestDamage = model.evaluateSlots(input.initial);
     bestSlots = { ...input.initial };
   }
@@ -385,6 +504,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     critHi: Math.min(extreme(CRIT, 1), critCap),
     cdPositive,
     upper: Infinity,
+    cuts: [],
   }));
   let solves = 0;
   let relaxSolves = 0;
@@ -461,20 +581,53 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     //    de résoudre les autres, ni d'aller jusqu'au maximum exact (cible de HiGHS).
     for (const { constant, lp, fixed } of open) {
       const remaining = Math.max(1, (timeLimit - (Date.now() - started)) / 1000);
-      let solution: ReturnType<Highs["solve"]>;
-      try {
-        solution = highs.solve(lp(fixed), {
+      // Avec une cible, HiGHS s'arrête dès qu'il la dépasse ; ses valeurs ne forment
+      // alors pas toujours un vrai stuff. On vérifie, et sinon on résout sans cible.
+      const solve = (withTarget: boolean) =>
+        highs.solve(lp(fixed), {
           mip_rel_gap: 1e-9,
           mip_abs_gap: 1e-6,
           time_limit: remaining,
-          objective_target: bestDamage + eps - constant,
+          ...(withTarget ? { objective_target: bestDamage + eps - constant } : {}),
           output_flag: false,
         });
+      const readStuff = (solution: ReturnType<Highs["solve"]>) => {
+        const columns = solution.Columns as Record<string, { Primal: number }>;
+        const picked = new Set<number>();
+        let integral = true;
+        cands.forEach((x, i) => {
+          const value = columns[x.var]?.Primal ?? 0;
+          if (value > 1e-6 && value < 1 - 1e-6) integral = false;
+          if (value > 0.5) picked.add(i);
+        });
+        const counts = new Map<SlotFamily, number>();
+        picked.forEach((i) =>
+          counts.set(cands[i]!.family, (counts.get(cands[i]!.family) ?? 0) + 1),
+        );
+        const fits = [...counts].every(([family, n]) => n <= model.slotsOf(family));
+        const valid =
+          integral &&
+          fits &&
+          model.feasible(slotsFromSolution(picked)) &&
+          model.objective(gearOf(picked)) > -Infinity;
+        return { picked, valid };
+      };
+      let solution: ReturnType<Highs["solve"]>;
+      let stuff: { picked: Set<number>; valid: boolean };
+      try {
+        solution = solve(true);
+        solves++;
+        if (solution.Status === "Target for objective reached") {
+          stuff = readStuff(solution);
+          if (!stuff.valid) {
+            solution = solve(false);
+            solves++;
+          }
+        }
       } catch {
         failed = true; // erreur du solveur : rien de sûr sur cette cellule
         break;
       }
-      solves++;
       if (solution.Status === "Infeasible") continue;
       const targetReached = solution.Status === "Target for objective reached";
       if (solution.Status !== "Optimal" && !targetReached) {
@@ -482,11 +635,13 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         break;
       }
       const upper = solution.ObjectiveValue + constant;
-      const columns = solution.Columns as Record<string, { Primal: number }>;
-      const picked = new Set<number>();
-      cands.forEach((x, i) => {
-        if ((columns[x.var]?.Primal ?? 0) > 0.5) picked.add(i);
-      });
+      stuff = readStuff(solution);
+      if (!stuff.valid) {
+        // Solution inattendue (même « optimale ») : on ne conclut rien de faux.
+        failed = true;
+        break;
+      }
+      const picked = stuff.picked;
       // Chaque stuff trouvé est évalué avec la vraie formule.
       const value = model.objective(gearOf(picked));
       if (value > bestDamage) {
@@ -544,9 +699,13 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       }
     }
     if (!bestSplit) {
-      // Le stuff est déjà au coin de la cellule : la borne devrait être exacte.
-      proven = false;
-      lostUpper = Math.max(lostUpper, cellUpper);
+      // Le stuff est au coin de la cellule : seule la différence d'arrondis sépare
+      // la borne des vrais dégâts. On interdit ce stuff précis et on recommence.
+      queue.push({
+        ...cell,
+        upper: cellUpper,
+        cuts: [...cell.cuts, [...chosen]],
+      });
       continue;
     }
     const lo: Cell = { ...cell, pctLo: [...cell.pctLo], pctHi: [...cell.pctHi], upper: cellUpper };

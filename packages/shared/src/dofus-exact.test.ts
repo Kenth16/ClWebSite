@@ -7,7 +7,8 @@ import {
   type StatKey,
 } from "./dofus";
 import { optimizeTurnDamageExact } from "./dofus-exact";
-import { bestComboDamage, fastPerCast, turnSpells, type StatWeights } from "./dofus-optimizer";
+import { bestComboDamage, turnSpells, type StatWeights } from "./dofus-optimizer";
+import { STATS, computeSpellDamage, type SpellGrade, type StatTotals } from "./dofus";
 
 const item = (
   id: number,
@@ -59,6 +60,20 @@ function rng(seed: number) {
   };
 }
 
+/** Dégâts moyens exacts d'un lancer (formule du jeu, arrondis à l'inférieur, sans arrondir la moyenne). */
+function exactPerCast(t: (k: StatKey) => number, grade: SpellGrade): number {
+  const totals = Object.fromEntries(
+    Object.keys(STATS).map((k) => [k, t(k as StatKey)]),
+  ) as StatTotals;
+  const r = computeSpellDamage(totals, grade);
+  const p = r.criticalChance / 100;
+  return r.lines.reduce((sum, l) => {
+    const normal = (l.normal.min + l.normal.max) / 2;
+    const crit = l.critical ? (l.critical.min + l.critical.max) / 2 : normal;
+    return sum + (1 - p) * normal + p * crit;
+  }, 0);
+}
+
 describe("optimiseur exact", () => {
   const base: StatWeights = { ap: 7, strength: 400 };
   const spells = turnSpells([spell], 100, ["earth"], 8);
@@ -73,7 +88,7 @@ describe("optimiseur exact", () => {
     for (const b of activeSetBonuses(items, sets)) add(b.effects);
     if (Math.min(totals.get("ap") ?? 0, 12) < 8) return -Infinity;
     const t = (k: StatKey) => totals.get(k) ?? 0;
-    return bestComboDamage(spells, [[0]], 8, (s) => fastPerCast(s, t));
+    return bestComboDamage(spells, [[0]], 8, (s) => exactPerCast(t, s.grade));
   }
 
   it("retrouve l'optimum d'une recherche exhaustive (panoplies comprises)", () => {
