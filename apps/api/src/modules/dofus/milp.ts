@@ -16,7 +16,7 @@
  *   valeurs réelles de % dommages ou de % critique, et on recommence.
  * Quand toutes les cellules sont écartées, le meilleur stuff est l'optimum.
  */
-import highsLoader from "highs";
+import { inProcessSolver, workerSolver, type SolveResult } from "./highs-pool";
 import {
   SLOTS,
   buildDamageModel,
@@ -30,14 +30,12 @@ import {
   type Vec,
 } from "@kenpai/shared";
 
-type Highs = Awaited<ReturnType<typeof highsLoader>>;
-let highsPromise: Promise<Highs> | null = null;
-const loadHighs = () => (highsPromise ??= highsLoader());
-
 export interface MilpInput extends DamageModelInput {
   /** Un bon stuff de départ (recherche locale) : les cellules moins bonnes tombent vite. */
   initial?: Partial<Record<SlotId, number>>;
   timeLimitMs?: number;
+  /** Fils de calcul HiGHS en parallèle (0 ou absent : dans le fil courant). */
+  workers?: number;
   /** Appelé après chaque cellule : meilleur stuff actuel et travail restant. */
   onProgress?: (progress: MilpProgress) => void;
 }
@@ -133,7 +131,8 @@ const fmt = (x: number) => {
 export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResult> {
   const started = Date.now();
   const timeLimit = input.timeLimitMs ?? 120_000;
-  const highs = await loadHighs();
+  // Fils de calcul en parallèle si demandé, sinon dans le fil courant.
+  const solver = input.workers ? workerSolver(input.workers) : await inProcessSolver();
   const model = buildDamageModel(input);
   const { D, AP, CRIT, CRIT_DMG, MELEE, RANGED, baseVec, prepared, setTiers } = model;
   const apTarget = input.ap;
@@ -383,7 +382,8 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     }
   }
   cands.forEach((x, i) => {
-    const criteria = itemById.get(x.c.id)?.criteria;
+    const item = itemById.get(x.c.id);
+    const criteria = item ? model.criteriaOf(item) : null;
     if (criteria) encode(criteria, x.var, `cond${i}`);
   });
 
@@ -514,25 +514,12 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   // Cellules abandonnées (erreur du solveur) : leur borne reste à prendre en compte.
   let lostUpper = -Infinity;
   const upperLeft = () =>
-    queue.reduce((m, c) => Math.max(m, c.upper), Math.max(bestDamage, lostUpper));
-  while (queue.length > 0) {
-    // Laisse respirer le serveur entre deux cellules (le solveur bloque pendant un calcul).
-    await new Promise((resolve) => setImmediate(resolve));
-    input.onProgress?.({
-      damage: bestDamage,
-      slots: bestSlots,
-      upper: upperLeft(),
-      cellsLeft: queue.length,
-      solves: solves + relaxSolves,
-    });
-    if (Date.now() - started > timeLimit) {
-      proven = false;
-      break;
-    }
-    let top = 0;
-    for (let i = 1; i < queue.length; i++) if (queue[i]!.upper > queue[top]!.upper) top = i;
-    const cell = queue.splice(top, 1)[0]!;
-    if (cell.upper <= bestDamage + eps) continue;
+    [...queue, ...running.values()].reduce(
+      (m, c) => Math.max(m, c.upper),
+      Math.max(bestDamage, lostUpper),
+    );
+  /** Traite une cellule : bornes, programmes en nombres entiers, puis coupe ou abandon. */
+  async function processCell(cell: Cell): Promise<void> {
     // Maximum de U dans la cellule : le meilleur des programmes (un par combo).
     let cellUpper = -Infinity;
     let chosen: Set<number> | null = null;
@@ -550,7 +537,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       let relaxUpper = Infinity;
       const fixed = new Map<string, 0 | 1>();
       try {
-        const relax = highs.solve(relaxed, { time_limit: remaining, output_flag: false });
+        const relax = await solver.solve(relaxed, { time_limit: remaining, output_flag: false });
         relaxSolves++;
         if (relax.Status === "Infeasible") continue;
         if (relax.Status === "Optimal") {
@@ -584,14 +571,14 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       // Avec une cible, HiGHS s'arrête dès qu'il la dépasse ; ses valeurs ne forment
       // alors pas toujours un vrai stuff. On vérifie, et sinon on résout sans cible.
       const solve = (withTarget: boolean) =>
-        highs.solve(lp(fixed), {
+        solver.solve(lp(fixed), {
           mip_rel_gap: 1e-9,
           mip_abs_gap: 1e-6,
           time_limit: remaining,
           ...(withTarget ? { objective_target: bestDamage + eps - constant } : {}),
           output_flag: false,
         });
-      const readStuff = (solution: ReturnType<Highs["solve"]>) => {
+      const readStuff = (solution: SolveResult) => {
         const columns = solution.Columns as Record<string, { Primal: number }>;
         const picked = new Set<number>();
         let integral = true;
@@ -612,15 +599,15 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
           model.objective(gearOf(picked)) > -Infinity;
         return { picked, valid };
       };
-      let solution: ReturnType<Highs["solve"]>;
+      let solution: SolveResult;
       let stuff: { picked: Set<number>; valid: boolean };
       try {
-        solution = solve(true);
+        solution = await solve(true);
         solves++;
         if (solution.Status === "Target for objective reached") {
           stuff = readStuff(solution);
           if (!stuff.valid) {
-            solution = solve(false);
+            solution = await solve(false);
             solves++;
           }
         }
@@ -657,10 +644,9 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     if (failed) {
       proven = false;
       lostUpper = Math.max(lostUpper, cell.upper);
-      if (Date.now() - started > timeLimit) break;
-      continue;
+      return;
     }
-    if (!chosen || cellUpper <= bestDamage + eps) continue;
+    if (!chosen || cellUpper <= bestDamage + eps) return;
     const gear = gearOf(chosen);
 
     // Couper la cellule là où la borne est la plus lâche pour ce stuff.
@@ -706,13 +692,38 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         upper: cellUpper,
         cuts: [...cell.cuts, [...chosen]],
       });
-      continue;
+      return;
     }
     const lo: Cell = { ...cell, pctLo: [...cell.pctLo], pctHi: [...cell.pctHi], upper: cellUpper };
     const hi: Cell = { ...cell, pctLo: [...cell.pctLo], pctHi: [...cell.pctHi], upper: cellUpper };
     (bestSplit as { apply: (lo: Cell, hi: Cell) => void }).apply(lo, hi);
     queue.push(hi, lo);
   }
+
+  // Plusieurs cellules à la fois (une par fil de calcul), les plus prometteuses d'abord.
+  const running = new Map<Promise<void>, Cell>();
+  let timeUp = false;
+  for (;;) {
+    input.onProgress?.({
+      damage: bestDamage,
+      slots: bestSlots,
+      upper: upperLeft(),
+      cellsLeft: queue.length + running.size,
+      solves: solves + relaxSolves,
+    });
+    if (Date.now() - started > timeLimit) timeUp = true;
+    while (!timeUp && running.size < solver.size && queue.length > 0) {
+      let top = 0;
+      for (let i = 1; i < queue.length; i++) if (queue[i]!.upper > queue[top]!.upper) top = i;
+      const cell = queue.splice(top, 1)[0]!;
+      if (cell.upper <= bestDamage + eps) continue;
+      const task: Promise<void> = processCell(cell).finally(() => running.delete(task));
+      running.set(task, cell);
+    }
+    if (running.size === 0) break;
+    await Promise.race(running.keys());
+  }
+  if (timeUp && queue.some((c) => c.upper > bestDamage + eps)) proven = false;
 
   return {
     slots: bestSlots,

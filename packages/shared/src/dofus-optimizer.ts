@@ -22,6 +22,7 @@ import {
   type StatTotals,
 } from "./dofus";
 import { z } from "zod";
+import { criteriaMet, type CriteriaTree } from "./dofus-criteria";
 
 // ─── Demande ───────────────────────────────────────────────────────────────
 
@@ -319,6 +320,8 @@ interface Candidate {
   stats: [StatKey, number][];
   /** Valeur de l'objet seul (poids approximatifs). */
   value: number;
+  /** Conditions de l'objet (caractéristiques, panoplies actives), si elle en a. */
+  criteria: CriteriaTree | null;
 }
 
 export interface OptimizeInput {
@@ -398,6 +401,7 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
       group: uniqueGroup(item),
       stats,
       value: stats.reduce((sum, [k, v]) => sum + w(k) * v, 0),
+      criteria: item.criteria ?? null,
     });
   }
 
@@ -458,11 +462,18 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
       add(c.stats);
       if (c.setId !== null) counts.set(c.setId, (counts.get(c.setId) ?? 0) + 1);
     }
+    let activeSets = 0;
     for (const [setId, n] of counts) {
+      if (n >= 2) activeSets++;
       const tier = setTiers.get(setId)?.[n];
       if (tier) add(tier);
     }
-    return objective(capped);
+    // Conditions des objets (totaux bruts, non plafonnés) : chaque objet dont la
+    // condition n'est pas remplie coûte très cher, pour que la recherche s'en écarte.
+    let violations = 0;
+    const context = { total: (k: StatKey) => totals.get(k) ?? 0, activeSets };
+    for (const c of slots) if (c?.criteria && !criteriaMet(c.criteria, context)) violations++;
+    return objective(capped) - violations * 1_000_000;
   }
 
   /** L'objet est-il déjà porté ailleurs (ou un autre objet de son groupe unique) ? */

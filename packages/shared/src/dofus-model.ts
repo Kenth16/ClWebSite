@@ -14,7 +14,7 @@ import {
   type SlotId,
   type StatKey,
 } from "./dofus";
-import { criteriaMet } from "./dofus-criteria";
+import { criteriaMet, simplifyCriteria, type CriteriaTree } from "./dofus-criteria";
 import {
   bestComboDamage,
   damageProxyWeights,
@@ -50,6 +50,11 @@ export interface Cand {
   proxy: number;
   /** L'objet a des conditions (il ne peut alors pas servir à en écarter un autre). */
   conditional: boolean;
+  /** Conditions de l'objet (texte normalisé), pour comparer deux objets. */
+  criteriaKey: string | null;
+  /** Caractéristiques visées par des conditions : apport minimal / maximal (panoplie comprise). */
+  rawLo: number[];
+  rawHi: number[];
 }
 
 export function buildDamageModel(input: DamageModelInput) {
@@ -198,9 +203,160 @@ export function buildDamageModel(input: DamageModelInput) {
   const proxyWeights = damageProxyWeights(input.elements as never);
   const byFamily = new Map<SlotFamily, Cand[]>();
   let considered = 0;
+  // ── Conditions présentes : quelles caractéristiques ne doivent pas monter
+  // (« PA < 12 »), lesquelles ne doivent pas baisser (« Force > 99 »), et le
+  // nombre de panoplies actives (« bonus de panoplie < 2 »).
+  // D'abord, les conditions toujours vraies ou toujours fausses (vu les bornes
+  // possibles de chaque total) sont simplifiées : elles ne contraignent rien.
+  const rawOfItem = (effects: readonly { stat: StatKey | null; value: number }[], stat: StatKey) =>
+    effects.reduce((sum, e) => (e.stat === stat ? sum + e.value : sum), 0);
+  const usable = input.items.filter(
+    (i) => i.family && i.level <= input.level && isAllowedItem(i) && i.criteria?.kind !== "false",
+  );
+  const totalRange = new Map<StatKey, [number, number]>();
+  const rangeOf = (stat: StatKey): [number, number] => {
+    const known = totalRange.get(stat);
+    if (known) return known;
+    let lo = input.base[stat] ?? 0;
+    let hi = lo;
+    for (const family of new Set(SLOTS.map((x) => x.family as SlotFamily))) {
+      const k = SLOTS.filter((x) => x.family === family).length;
+      const values = usable
+        .filter((i) => i.family === family)
+        .map((i) => rawOfItem(i.effects, stat));
+      const neg = values
+        .filter((v) => v < 0)
+        .sort((a, b) => a - b)
+        .slice(0, k);
+      const pos = values
+        .filter((v) => v > 0)
+        .sort((a, b) => b - a)
+        .slice(0, k);
+      lo += neg.reduce((a, b) => a + b, 0);
+      hi += pos.reduce((a, b) => a + b, 0);
+    }
+    for (const set of input.sets) {
+      for (const effects of Object.values(set.bonuses)) {
+        const v = rawOfItem(effects, stat);
+        if (v < 0) lo += v;
+        if (v > 0) hi += v;
+      }
+    }
+    // Les PA visés sont obligatoires : un total en dessous est impossible.
+    if (stat === "ap") lo = Math.max(lo, apTarget);
+    const range: [number, number] = [lo, hi];
+    totalRange.set(stat, range);
+    return range;
+  };
+  const decide = (t: CriteriaTree): CriteriaTree => {
+    if (t.kind === "and" || t.kind === "or") return { ...t, children: t.children.map(decide) };
+    if (t.kind !== "stat") return t;
+    const [lo, hi] = rangeOf(t.stat);
+    const always =
+      t.op === "<"
+        ? hi < t.value
+        : t.op === ">"
+          ? lo > t.value
+          : t.op === "="
+            ? lo === hi && lo === t.value
+            : hi < t.value || lo > t.value;
+    const never =
+      t.op === "<"
+        ? lo >= t.value
+        : t.op === ">"
+          ? hi <= t.value
+          : t.op === "="
+            ? t.value < lo || t.value > hi
+            : lo === hi && lo === t.value;
+    return always ? { kind: "true" } : never ? { kind: "false" } : t;
+  };
+  const simplified = new Map<number, CriteriaTree | null>();
+  for (const item of usable) {
+    if (item.criteria) simplified.set(item.id, simplifyCriteria(decide(item.criteria), {}));
+  }
+  const criteriaOf = (item: DofusItem): CriteriaTree | null =>
+    simplified.has(item.id) ? simplified.get(item.id)! : (item.criteria ?? null);
+
+  const mustNotRise = new Set<StatKey>();
+  const mustNotFall = new Set<StatKey>();
+  let setsMustNotRise = false;
+  let setsMustNotFall = false;
+  const scan = (t: CriteriaTree) => {
+    if (t.kind === "and" || t.kind === "or") t.children.forEach(scan);
+    else if (t.kind === "stat") {
+      if (t.op !== ">") mustNotRise.add(t.stat);
+      if (t.op !== "<") mustNotFall.add(t.stat);
+    } else if (t.kind === "sets") {
+      if (t.op !== ">") setsMustNotRise = true;
+      if (t.op !== "<") setsMustNotFall = true;
+    }
+  };
+  for (const item of usable) {
+    const tree = criteriaOf(item);
+    if (tree && tree.kind !== "false") scan(tree);
+  }
+  const condStats = [...new Set([...mustNotRise, ...mustNotFall])];
+  const rawOf = (effects: readonly { stat: StatKey | null; value: number }[], stat: StatKey) =>
+    effects.reduce((sum, e) => (e.stat === stat ? sum + e.value : sum), 0);
+  /** Apport brut d'un objet aux caractéristiques des conditions, bonus de panoplie au pire / au mieux. */
+  const rawRange = (item: DofusItem, set: number) => {
+    const rawLo: number[] = [];
+    const rawHi: number[] = [];
+    for (const stat of condStats) {
+      const own = rawOf(item.effects, stat);
+      let lo = 0;
+      let hi = 0;
+      if (set >= 0) {
+        const bonuses = input.sets[set]!.bonuses;
+        const at = (n: number) => {
+          if (n < 2) return 0;
+          const tier = Math.max(
+            0,
+            ...Object.keys(bonuses)
+              .map(Number)
+              .filter((k) => k <= n),
+          );
+          return rawOf(bonuses[tier] ?? [], stat);
+        };
+        lo = Infinity;
+        hi = -Infinity;
+        for (let n = 0; n < input.sets[set]!.itemIds.length; n++) {
+          const step = at(n + 1) - at(n);
+          lo = Math.min(lo, step);
+          hi = Math.max(hi, step);
+        }
+        if (!Number.isFinite(lo)) lo = hi = 0;
+      }
+      rawLo.push(own + lo);
+      rawHi.push(own + hi);
+    }
+    return { rawLo, rawHi };
+  };
+  /**
+   * Remplacer a par b (ou par l'emplacement vide si b est null) garde-t-il
+   * toutes les conditions du stuff ? b n'a pas de conditions (ou les mêmes que
+   * a), ne fait monter aucune caractéristique bornée par le haut, ne fait
+   * baisser aucune caractéristique bornée par le bas, et ne change pas le
+   * nombre de panoplies actives dans le mauvais sens.
+   */
+  const safeSwap = (a: Cand, b: Cand | null) => {
+    if (b && b.criteriaKey !== null && b.criteriaKey !== a.criteriaKey) return false;
+    for (let k = 0; k < condStats.length; k++) {
+      const stat = condStats[k]!;
+      const bLo = b ? b.rawLo[k]! : 0;
+      const bHi = b ? b.rawHi[k]! : 0;
+      if (mustNotRise.has(stat) && bHi > a.rawLo[k]!) return false;
+      if (mustNotFall.has(stat) && bLo < a.rawHi[k]!) return false;
+    }
+    if (setsMustNotRise && b && b.set >= 0) return false;
+    if (setsMustNotFall && a.set >= 0) return false;
+    return true;
+  };
+
   for (const item of input.items) {
     if (!item.family || item.level > input.level || !isAllowedItem(item)) continue;
-    if (item.criteria?.kind === "false") continue; // jamais portable (ex. autre classe)
+    const criteria = criteriaOf(item);
+    if (criteria?.kind === "false") continue; // jamais portable (autre classe, condition impossible)
     considered++;
     const v = vecOf(item.effects);
     const set = setOfItem.get(item.id) ?? -1;
@@ -227,7 +383,9 @@ export function buildDamageModel(input: DamageModelInput) {
       lo,
       up,
       proxy,
-      conditional: !!item.criteria,
+      conditional: !!criteria,
+      criteriaKey: criteria ? JSON.stringify(criteria) : null,
+      ...rawRange(item, set),
     });
     byFamily.set(item.family, list);
   }
@@ -247,13 +405,13 @@ export function buildDamageModel(input: DamageModelInput) {
   for (const [family, list] of byFamily) {
     const k = slotsOf(family);
     const kept = list.filter((a) => {
-      if (geq(zero, a.hi)) return false; // l'emplacement vide fait au moins aussi bien
+      // L'emplacement vide fait au moins aussi bien.
+      if (geq(zero, a.hi) && safeSwap(a, null)) return false;
       let plain = 0;
       let prysma = 0;
       for (const b of list) {
-        // Un objet à conditions peut être impossible à porter : il n'écarte personne.
-        if (b === a || b.conditional || (a.set >= 0 && b.set === a.set)) continue;
-        if (!geq(b.lo, a.hi)) continue;
+        if (b === a || (a.set >= 0 && b.set === a.set)) continue;
+        if (!geq(b.lo, a.hi) || !safeSwap(a, b)) continue;
         // Égalité parfaite : on n'en garde qu'un (le plus petit identifiant).
         if (equal(b.lo, a.hi) && equal(a.lo, b.hi) && b.id > a.id) continue;
         if (b.prysma) prysma++;
@@ -323,6 +481,8 @@ export function buildDamageModel(input: DamageModelInput) {
 
   return {
     feasible,
+    /** Conditions simplifiées d'un objet (null : toujours remplies). */
+    criteriaOf,
     D,
     contrib,
     AP,

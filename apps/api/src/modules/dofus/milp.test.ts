@@ -243,4 +243,28 @@ describe("optimiseur MILP", () => {
     ).length;
     if (s8.has(11)) expect(activeSets).toBeLessThan(2);
   }, 60_000);
+
+  it("n'écarte pas un objet que remplacer casserait une condition (PA < 12)", async () => {
+    // Base 11 PA (exo compris). Arme « PA < 12 » très forte. L'anneau 2 bat l'anneau 1
+    // en tout… mais donne 1 PA : avec lui, l'arme devient impossible à porter.
+    const items: DofusItem[] = [
+      { ...item(1, "weapon", { strength: 300 }), criteria: parseCriteria("CP<12") },
+      item(2, "weapon", { strength: 20 }),
+      item(3, "ring", { strength: 50 }),
+      item(4, "ring", { strength: 60, ap: 1 }),
+    ];
+    const eleven = turnSpells(raw, 100, ["earth"], 11);
+    const r = await optimizeTurnDamageMilp({
+      level: 200,
+      elements: ["earth"],
+      ap: 11,
+      base: { ...base, ap: 11 },
+      spells: eleven,
+      items,
+      sets: [],
+    });
+    expect(r.proven).toBe(true);
+    // Meilleur stuff : arme 1 + anneau 3 (sans PA), pas l'anneau 4.
+    expect(new Set(Object.values(r.slots))).toEqual(new Set([1, 3]));
+  }, 60_000);
 });

@@ -6,7 +6,6 @@ import {
   classElements,
   computeCharacter,
   optimizeTurnDamage,
-  optimizeTurnDamageExact,
   turnCombo,
   type DofusBreed,
   type OptimizeRequest,
@@ -14,6 +13,7 @@ import {
 } from "@kenpai/shared";
 import { HttpError } from "../../lib/errors";
 import type { DofusClient } from "./client";
+import { defaultWorkers } from "./highs-pool";
 import { optimizeTurnDamageMilp } from "./milp";
 import type { DofusDbClient } from "./spells";
 
@@ -166,20 +166,7 @@ export class OptimizeJobs {
     progress.damage = local.score;
     await new Promise((resolve) => setImmediate(resolve));
 
-    // 2. Exploration rapide (branch and bound, 2 s) : souvent un meilleur départ.
-    const quick = optimizeTurnDamageExact({
-      level,
-      elements,
-      ap,
-      base: local.base,
-      spells: local.spells,
-      items,
-      sets,
-      initial: local.slots,
-      timeLimitMs: 2_000,
-    });
-
-    // Les recherches rapides ignorent les conditions : on ne garde que les stuffs portables.
+    // La recherche rapide pénalise les conditions non remplies ; on vérifie quand même.
     const model = buildDamageModel({
       level,
       elements,
@@ -189,10 +176,10 @@ export class OptimizeJobs {
       items,
       sets,
     });
-    const starts = [quick.slots, local.slots].filter((slots) => model.feasible(slots));
+    const starts = [local.slots].filter((slots) => model.feasible(slots));
     progress.damage = starts.length > 0 ? model.evaluateSlots(starts[0]!) : null;
 
-    // 3. Preuve par programmation linéaire en nombres entiers (HiGHS).
+    // 2. Preuve par programmation linéaire en nombres entiers (HiGHS), en parallèle.
     progress.phase = "proof";
     const proof = await optimizeTurnDamageMilp({
       level,
@@ -203,6 +190,7 @@ export class OptimizeJobs {
       items,
       sets,
       initial: starts[0],
+      workers: defaultWorkers(),
       timeLimitMs: PROOF_TIME_LIMIT_MS,
       onProgress: (p) => {
         progress.damage = p.damage;
