@@ -31,6 +31,7 @@ export type IconKey =
   | "reviews"
   | "dofus"
   | "equipment"
+  | "optimizer"
   | "profile";
 
 /**
@@ -258,6 +259,13 @@ export const catalog: CatalogEntry[] = [
         title: "Simulateur de stuff",
         description: "Composez un équipement et calculez les caractéristiques du personnage.",
         icon: "equipment",
+        status: "available",
+      },
+      {
+        slug: "optimiseur",
+        title: "Optimiseur de stuff",
+        description: "Trouvez automatiquement le meilleur équipement pour une classe et un niveau.",
+        icon: "optimizer",
         status: "available",
       },
     ],

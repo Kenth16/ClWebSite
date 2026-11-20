@@ -4,12 +4,14 @@ import {
   LEVEL_MAX,
   SLOT_SUBTYPES,
   SLOT_TYPES,
+  optimizeRequestSchema,
   parseStatFilters,
   type ItemStatFilter,
   type SlotFamily,
 } from "@kenpai/shared";
 import { HttpError, parseInput } from "../../lib/errors";
 import type { DofusClient } from "./client";
+import { OptimizeJobs } from "./optimize-jobs";
 import { DofusDbClient } from "./spells";
 
 const searchQuery = z.object({
@@ -77,6 +79,28 @@ export const dofusRoutes: FastifyPluginAsync<{
   app.get("/sets/:id/items", limited, async (request) => {
     const { id } = parseInput(idParams, request.params);
     return client.setWithItems(id);
+  });
+
+  /**
+   * Optimiseur : le stuff qui fait PROUVABLEMENT le plus de dégâts sur un tour
+   * (meilleur combo de sorts des éléments choisis, avec les PA visés). Le calcul
+   * tourne en tâche de fond : on le lance, puis on suit sa progression.
+   */
+  const jobs = new OptimizeJobs(client, spells);
+  app.post(
+    "/optimize",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const body = parseInput(optimizeRequestSchema, request.body);
+      return reply.status(202).send({ job: jobs.start(body) });
+    },
+  );
+  const jobParams = z.object({ id: z.uuid("Identifiant invalide.") });
+  app.get("/optimize/:id", async (request) => {
+    const { id } = parseInput(jobParams, request.params);
+    const job = jobs.get(id);
+    if (!job) throw new HttpError(404, "Ce calcul n'existe plus.");
+    return { job };
   });
 
   app.get("/sets/:id", limited, async (request) => {

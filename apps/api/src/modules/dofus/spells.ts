@@ -29,6 +29,32 @@ interface RawEffect {
   effectId: number;
   diceNum: number;
   diceSide: number;
+  /** Cibles et conditions, ex. « A » (ennemis), « A,E573 » (ennemi dans l'état 573). */
+  targetMask?: string;
+  /** Tours avant que l'effet ne se déclenche (0 : immédiat). */
+  delay?: number;
+  /** Déclencheurs : « I » au lancer ; les autres (fin de tour, etc.) viennent plus tard. */
+  triggers?: string;
+  /** Zone : forme (code ASCII, 67 = cercle) et rayons (param2 : rayon minimal). */
+  zoneDescr?: { shape?: number; param2?: number } | null;
+}
+
+/**
+ * L'effet frappe-t-il la cible ennemie dès le lancer, sans condition particulière ?
+ * Les effets différés ou déclenchés plus tard, ceux qui ne touchent pas la cible
+ * (zone autour d'elle), ceux qui ne visent pas d'ennemi et ceux qui exigent un
+ * état ou une condition (lettre majuscule suivie d'un numéro, ex. « E573 »)
+ * sont écartés : ce sont des variantes selon la situation, pas des dégâts en plus.
+ */
+export function appliesOnCast(e: RawEffect): boolean {
+  if ((e.delay ?? 0) > 0) return false;
+  if (e.triggers && e.triggers !== "I") return false;
+  // Cercle évidé (« C » avec rayon minimal) ou anneau « O » : la cible n'est pas touchée.
+  const zone = e.zoneDescr;
+  if (zone && ((zone.shape === 67 && (zone.param2 ?? 0) > 0) || zone.shape === 79)) return false;
+  const tokens = (e.targetMask ?? "A").split(",").map((t) => t.trim().replace(/^\*/, ""));
+  if (!tokens.includes("A")) return false;
+  return !tokens.some((t) => /^[A-Z]\d+/.test(t));
 }
 interface RawLevel {
   id: number;
@@ -39,6 +65,9 @@ interface RawLevel {
   minRange: number;
   range: number;
   criticalHitProbability: number;
+  maxCastPerTurn?: number;
+  maxCastPerTarget?: number;
+  minCastInterval?: number;
   effects: RawEffect[];
   criticalEffect?: RawEffect[];
 }
@@ -65,11 +94,21 @@ interface Page<T> {
 function damageLines(effects: RawEffect[] | undefined): SpellDamageLine[] {
   return (effects ?? []).flatMap((e) => {
     const kind = DAMAGE_EFFECTS[e.effectId];
-    if (!kind) return [];
+    if (!kind || !appliesOnCast(e)) return [];
     const min = e.diceNum;
     const max = e.diceSide > 0 ? e.diceSide : e.diceNum;
     return [{ ...kind, min: Math.min(min, max), max: Math.max(min, max) }];
   });
+}
+
+/**
+ * Lancers possibles par tour sur une même cible : 1 si le sort a un temps de
+ * relance, sinon la plus petite limite (par tour, par cible), ou null sans limite.
+ */
+function castsPerTurn(raw: RawLevel): number | null {
+  if ((raw.minCastInterval ?? 0) > 0) return 1;
+  const limits = [raw.maxCastPerTurn ?? 0, raw.maxCastPerTarget ?? 0].filter((n) => n > 0);
+  return limits.length > 0 ? Math.min(...limits) : null;
 }
 
 export function normalizeGrade(raw: RawLevel): SpellGrade {
@@ -80,6 +119,7 @@ export function normalizeGrade(raw: RawLevel): SpellGrade {
     minRange: raw.minRange,
     range: raw.range,
     criticalChance: raw.criticalHitProbability,
+    maxCastsPerTurn: castsPerTurn(raw),
     lines: damageLines(raw.effects),
     criticalLines: damageLines(raw.criticalEffect),
   };

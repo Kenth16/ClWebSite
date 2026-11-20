@@ -61,6 +61,9 @@ export function cleanEffectText(text: string): string {
     .trim();
 }
 
+/** Effets sans intérêt pour le simulateur : attitudes, fertilité, échangeabilité. */
+const HIDDEN_EFFECT = /^(attitude|fertile|échangeable)/i;
+
 export function normalizeEffect(e: RawEffect): DofusEffect {
   // Les effets « actifs » sont les lignes de dégâts des armes : affichées, non additionnées.
   const stat = e.type.is_active || e.type.is_meta ? null : statFromEffectName(e.type.name);
@@ -97,7 +100,10 @@ export function normalizeItem(raw: RawItem): DofusItem {
     level: raw.level,
     type: raw.type.name,
     icon: raw.image_urls?.icon ?? null,
-    effects: (raw.effects ?? []).map(normalizeEffect).filter((e) => e.text !== ""),
+    effects: (raw.effects ?? [])
+      .filter((e) => !HIDDEN_EFFECT.test(e.type.name.trim()))
+      .map(normalizeEffect)
+      .filter((e) => e.text !== ""),
     conditions: normalizeConditions(raw.conditions),
     set: raw.parent_set ? { id: raw.parent_set.id, name: raw.parent_set.name } : null,
     family: raw.type.id !== undefined ? (ITEM_TYPE_FAMILY[raw.type.id] ?? null) : null,

@@ -727,6 +727,8 @@ export interface SpellGrade {
   range: number;
   /** Taux de critique de base du sort (%). */
   criticalChance: number;
+  /** Lancers possibles par tour sur une même cible (null : pas de limite). */
+  maxCastsPerTurn?: number | null;
   lines: SpellDamageLine[];
   criticalLines: SpellDamageLine[];
 }

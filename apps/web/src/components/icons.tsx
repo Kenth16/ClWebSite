@@ -23,6 +23,7 @@ import {
   Trophy,
   UserRound,
   Users,
+  WandSparkles,
   type LucideIcon,
 } from "lucide-react";
 
@@ -50,6 +51,7 @@ export const icons: Record<IconKey, LucideIcon> = {
   reviews: ThumbsDown,
   dofus: Egg,
   equipment: Shield,
+  optimizer: WandSparkles,
   profile: UserRound,
 };
 

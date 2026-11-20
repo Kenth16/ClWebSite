@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DofusDbClient } from "./spells";
+import { DofusDbClient, appliesOnCast, normalizeGrade } from "./spells";
 
 function level(id: number, spellId: number, grade: number, minPlayerLevel: number) {
   return {
@@ -59,5 +59,37 @@ describe("sorts Dofus (DofusDB)", () => {
     // Deuxième appel : servi par le cache.
     await client.spells(9);
     expect(urls.filter((u) => u.includes("/spell-variants"))).toHaveLength(1);
+  });
+
+  it("ne garde que les dégâts du lancer sur la cible, sans condition", () => {
+    const hit = { effectId: 99, diceNum: 10, diceSide: 12 };
+    expect(appliesOnCast({ ...hit, targetMask: "a,A", triggers: "I" })).toBe(true);
+    expect(appliesOnCast({ ...hit, targetMask: "A,e573" })).toBe(true); // « pas dans l'état »
+    expect(appliesOnCast({ ...hit, targetMask: "A,E573" })).toBe(false); // exige un état
+    expect(appliesOnCast({ ...hit, targetMask: "g" })).toBe(false); // ne vise pas d'ennemi
+    expect(appliesOnCast({ ...hit, delay: 3 })).toBe(false);
+    expect(appliesOnCast({ ...hit, triggers: "TE" })).toBe(false);
+    expect(appliesOnCast({ ...hit, zoneDescr: { shape: 67, param2: 1 } })).toBe(false);
+  });
+
+  it("calcule les lancers possibles par tour", () => {
+    const base = {
+      id: 1,
+      spellId: 1,
+      grade: 1,
+      minPlayerLevel: 1,
+      apCost: 3,
+      minRange: 1,
+      range: 6,
+      criticalHitProbability: 5,
+      effects: [],
+    };
+    expect(
+      normalizeGrade({ ...base, maxCastPerTurn: 3, maxCastPerTarget: 2 }).maxCastsPerTurn,
+    ).toBe(2);
+    expect(normalizeGrade({ ...base, minCastInterval: 2, maxCastPerTurn: 3 }).maxCastsPerTurn).toBe(
+      1,
+    );
+    expect(normalizeGrade(base).maxCastsPerTurn).toBeNull();
   });
 });

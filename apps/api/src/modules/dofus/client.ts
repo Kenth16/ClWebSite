@@ -1,4 +1,5 @@
 import {
+  SLOT_TYPES,
   itemMatchesStatFilters,
   slotTypes,
   type DofusItem,
@@ -114,6 +115,22 @@ export class DofusClient {
     const results = await Promise.allSettled(set.itemIds.map((itemId) => this.item(itemId)));
     const items = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     return { set, items };
+  }
+
+  /** Toutes les panoplies (bonus et objets), pour l'optimiseur. */
+  async allSets(): Promise<DofusSet[]> {
+    const page = await this.get<{ sets: RawSet[] }>("/sets/all");
+    return page.sets.map(normalizeSet);
+  }
+
+  /** Tous les équipements de tous les emplacements, pour l'optimiseur. */
+  async allEquipment(): Promise<DofusItem[]> {
+    const lists = await Promise.all(
+      (Object.keys(SLOT_TYPES) as SlotFamily[]).map((family) =>
+        this.allOfTypes(SLOT_TYPES[family]),
+      ),
+    );
+    return lists.flat();
   }
 
   /** Tous les objets de ces types (liste légère : effets, sans conditions ni panoplie). */

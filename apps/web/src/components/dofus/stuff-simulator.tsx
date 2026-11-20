@@ -65,6 +65,7 @@ import { Forgemagic } from "./forgemagic";
 import { SavedBuildsDialog } from "./saved-builds";
 import { BuildTagsEditor } from "./tags";
 import { SetPicker } from "./set-picker";
+import { STUFF_STORAGE_KEY } from "./storage";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
 // ─── Stuff enregistré dans le navigateur ───────────────────────────────────
@@ -90,7 +91,7 @@ interface Stuff {
   tags: BuildTags;
 }
 
-const STORAGE_KEY = "kenpai:dofus:stuff";
+const STORAGE_KEY = STUFF_STORAGE_KEY;
 const NOTES_MAX = 255;
 const zeros = () =>
   Object.fromEntries(CHARACTERISTICS.map((c) => [c, 0])) as Record<Characteristic, number>;

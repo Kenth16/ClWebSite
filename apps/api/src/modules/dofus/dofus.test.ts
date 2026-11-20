@@ -87,6 +87,14 @@ function fakeFetch() {
             type: { name: "-special spell-", is_meta: true },
             formatted: "{{spell,8394,1::Jaune Ocre}} :\n• Le porteur gagne 1 PA.",
           },
+          {
+            int_minimum: 0,
+            int_maximum: 0,
+            type: { name: "Échangeable :" },
+            formatted: "Échangeable : 0",
+          },
+          { int_minimum: 0, int_maximum: 0, type: { name: "Attitude" }, formatted: "Attitude 0" },
+          { int_minimum: 0, int_maximum: 0, type: { name: "Fertile" }, formatted: "Fertile" },
         ],
       };
       return json({ items: decodeURIComponent(url).includes("=dofus,") ? [ocre] : [light] });
