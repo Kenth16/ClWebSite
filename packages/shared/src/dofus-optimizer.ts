@@ -4,6 +4,7 @@ import {
   LEVEL_MAX,
   SCROLL_MAX,
   SLOTS,
+  STATS,
   STAT_CAPS,
   availablePoints,
   characteristicCost,
@@ -29,20 +30,57 @@ import { criteriaMet, type CriteriaTree } from "./dofus-criteria";
 export const OPTIMIZER_ELEMENTS = ["earth", "fire", "water", "air", "neutral"] as const;
 export const OPTIMIZER_AP_MIN = 6;
 
+/** Sorts que le joueur peut évaluer à la fois. */
+export const OPTIMIZER_SPELLS_MAX = 20;
+/** Éléments dont on peut exiger un % de résistance minimal. */
+export const RESISTANCE_STATS = {
+  neutral: "neutralResPct",
+  earth: "earthResPct",
+  fire: "fireResPct",
+  water: "waterResPct",
+  air: "airResPct",
+} as const satisfies Record<string, StatKey>;
+
+const resistanceMin = z.number().int().min(-100).max(100).optional();
+
 export const optimizeRequestSchema = z.object({
   breedId: z.number().int().positive("Choisissez une classe."),
   level: z.number().int().min(1).max(LEVEL_MAX),
-  elements: z
-    .array(z.enum(OPTIMIZER_ELEMENTS, "Élément inconnu."))
-    .min(1, "Choisissez au moins un élément.")
-    .max(OPTIMIZER_ELEMENTS.length)
-    .refine((l) => new Set(l).size === l.length, "Élément en double."),
-  /** PA que le stuff doit atteindre ; le combo du tour se calcule sur ces PA. */
+  /** Sorts choisis par le joueur : leurs dégâts (un lancer chacun) sont additionnés. */
+  spellIds: z
+    .array(z.number().int().positive())
+    .min(1, "Choisissez au moins un sort.")
+    .max(OPTIMIZER_SPELLS_MAX, `Au plus ${OPTIMIZER_SPELLS_MAX} sorts.`)
+    .refine((l) => new Set(l).size === l.length, "Sort en double."),
+  /** PA que le stuff doit atteindre (exo compris). */
   ap: z.number().int().min(OPTIMIZER_AP_MIN).max(STAT_CAPS.ap),
   /** Exos PA, PM, PO que le joueur peut se payer (+1 chacun sur un objet). */
   exos: z
     .object({ ap: z.boolean(), mp: z.boolean(), range: z.boolean() })
     .default({ ap: false, mp: false, range: false }),
+  /** Coups critiques pondérés par la chance de critique, ou aucun critique. */
+  critical: z.boolean().default(true),
+  /** Distance ou mêlée : quel % de dommages s'applique à tous les sorts. */
+  attack: z.enum(["ranged", "melee"]).default("ranged"),
+  /** Parchemins dans chaque caractéristique (0 à 100). */
+  scrolls: z.number().int().min(0).max(SCROLL_MAX).default(100),
+  /** Exigences minimales du stuff. */
+  minimums: z
+    .object({
+      hp: z.number().int().min(0).max(100_000).optional(),
+      mp: z.number().int().min(0).max(STAT_CAPS.mp).optional(),
+      range: z.number().int().min(0).max(STAT_CAPS.range).optional(),
+      resistances: z
+        .object({
+          neutral: resistanceMin,
+          earth: resistanceMin,
+          fire: resistanceMin,
+          water: resistanceMin,
+          air: resistanceMin,
+        })
+        .default({}),
+    })
+    .default({ resistances: {} }),
 });
 export type OptimizeRequest = z.infer<typeof optimizeRequestSchema>;
 
@@ -633,4 +671,28 @@ export function optimizeTurnDamage(input: DamageOptimizeInput) {
     },
   });
   return { ...result, points, scrolls, spells, base };
+}
+
+/**
+ * Dégâts moyens des sorts choisis (un lancer chacun), formule du jeu : arrondis
+ * à l'inférieur, % dommages du type d'attaque choisi, critiques pondérés ou non.
+ */
+export function rotationDamage(
+  total: (k: StatKey) => number,
+  spells: readonly TurnSpell[],
+  options: { attack: "ranged" | "melee"; critical: boolean },
+): number {
+  const totals = Object.fromEntries(
+    (Object.keys(STATS) as StatKey[]).map((k) => [k, total(k)]),
+  ) as StatTotals;
+  if (!options.critical) totals.critical = -1000; // aucune chance de critique
+  let sum = 0;
+  for (const s of spells) {
+    const grade = {
+      ...s.grade,
+      range: options.attack === "melee" ? 1 : Math.max(2, s.grade.range),
+    };
+    sum += computeSpellDamage(totals, grade).exactAverage;
+  }
+  return sum;
 }

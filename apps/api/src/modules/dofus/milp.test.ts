@@ -267,4 +267,88 @@ describe("optimiseur MILP", () => {
     // Meilleur stuff : arme 1 + anneau 3 (sans PA), pas l'anneau 4.
     expect(new Set(Object.values(r.slots))).toEqual(new Set([1, 3]));
   }, 60_000);
+
+  it("rotation choisie : points de caractéristique et exigences minimales, comme une recherche exhaustive", async () => {
+    const budget = 12;
+    for (let seed = 1; seed <= 16; seed++) {
+      const r = rng(seed * 7);
+      const stat = (): Partial<Record<StatKey, number>> => ({
+        strength: Math.floor(r() * 30) - 5,
+        power: Math.floor(r() * 12),
+        damage: Math.floor(r() * 6),
+        critical: Math.floor(r() * 10),
+        criticalDamage: Math.floor(r() * 8),
+        rangedDamagePct: Math.floor(r() * 8) - 2,
+        meleeDamagePct: Math.floor(r() * 8) - 2,
+        vitality: Math.floor(r() * 40),
+        mp: r() < 0.3 ? 1 : 0,
+        ...(r() < 0.35 ? { ap: 1 } : {}),
+      });
+      const hats = [1, 2, 3].map((id) => item(id, "hat", stat()));
+      const rings = [4, 5, 6, 7].map((id) => item(id, "ring", stat()));
+      const cloaks = [8, 9].map((id) => item(id, "cloak", stat()));
+      rings[1] = { ...rings[1]!, criteria: parseCriteria("CS>10") };
+      const items = [...hats, ...rings, ...cloaks];
+      const critical = seed % 2 === 0;
+      const attack = seed % 3 === 0 ? ("melee" as const) : ("ranged" as const);
+      const minimums = { vitality: 20 + Math.floor(r() * 40), mp: 3 + (seed % 2) };
+      const rotationSpells = turnSpells(raw, 100, ["earth"], 12).map((s) => ({ ...s, limit: 1 }));
+      const base: StatWeights = { ap: 8, mp: 3 };
+
+      // Recherche exhaustive : objets × répartition des points (Force, Vitalité).
+      let best = -Infinity;
+      const opt = <T>(l: T[]) => [null, ...l];
+      for (const h of opt(hats))
+        for (const c of opt(cloaks))
+          for (const r1 of opt(rings))
+            for (const r2 of opt(rings)) {
+              if (r1 && r2 && r1.id >= r2.id) continue;
+              if (!r1 && r2) continue;
+              const chosen = [h, c, r1, r2].filter((x): x is DofusItem => x !== null);
+              for (let str = 0; str <= budget; str++) {
+                const vit = budget - str;
+                const totals = new Map<StatKey, number>(
+                  Object.entries(base) as [StatKey, number][],
+                );
+                const add = (k: StatKey, v: number) => totals.set(k, (totals.get(k) ?? 0) + v);
+                for (const i of chosen) for (const e of i.effects) if (e.stat) add(e.stat, e.value);
+                add("strength", str);
+                add("vitality", vit);
+                const t = (k: StatKey) => totals.get(k) ?? 0;
+                if (Math.min(t("ap"), 12) < 9) continue;
+                if (t("vitality") < minimums.vitality || t("mp") < minimums.mp) continue;
+                if (!chosen.every((i) => criteriaMet(i.criteria, { total: t, activeSets: 0 }))) {
+                  continue;
+                }
+                let damage = 0;
+                for (const s of rotationSpells) {
+                  const grade = { ...s.grade, range: attack === "melee" ? 1 : 6 };
+                  const totalsCrit = critical
+                    ? t
+                    : (k: StatKey) => (k === "critical" ? -1000 : t(k));
+                  damage += exactPerCast(totalsCrit, grade);
+                }
+                best = Math.max(best, damage);
+              }
+            }
+
+      const result = await optimizeTurnDamageMilp({
+        level: 200,
+        elements: ["earth"],
+        ap: 9,
+        base,
+        spells: rotationSpells,
+        items,
+        sets: [],
+        mode: "rotation",
+        attack,
+        critical,
+        pointsBudget: budget,
+        minimums,
+      });
+      expect(result.proven).toBe(true);
+      if (best === -Infinity) expect(result.damage).toBe(-Infinity);
+      else expect(result.damage).toBeCloseTo(best, 5);
+    }
+  }, 120_000);
 });

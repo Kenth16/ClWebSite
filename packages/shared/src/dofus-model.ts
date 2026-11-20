@@ -32,6 +32,64 @@ export interface DamageModelInput {
   spells: readonly TurnSpell[];
   items: readonly DofusItem[];
   sets: readonly DofusSet[];
+  /**
+   * « rotation » : dégâts = somme des sorts choisis, chacun lancé une fois.
+   * « combo » (par défaut) : meilleur combo de sorts dans les PA visés.
+   */
+  mode?: "combo" | "rotation";
+  /** Distance ou mêlée imposée : un seul % dommages (sorts + ce type) pour tous les sorts. */
+  attack?: "melee" | "ranged";
+  /** false : pas de coups critiques (dégâts normaux seulement). */
+  critical?: boolean;
+  /** Points de caractéristique à répartir par l'optimiseur (sinon déjà dans la base). */
+  pointsBudget?: number;
+  /** Exigences minimales sur les totaux bruts (ex. vitalité, PM, % résistance). */
+  minimums?: Partial<Record<StatKey, number>>;
+}
+
+/** Coût d'un point de caractéristique, par paliers : [jusqu'à, prix]. */
+export const POINT_TIERS: Record<string, [number, number][]> = {
+  vitality: [[Infinity, 1]],
+  wisdom: [[Infinity, 3]],
+  strength: [
+    [100, 1],
+    [200, 2],
+    [300, 3],
+    [Infinity, 4],
+  ],
+  intelligence: [
+    [100, 1],
+    [200, 2],
+    [300, 3],
+    [Infinity, 4],
+  ],
+  chance: [
+    [100, 1],
+    [200, 2],
+    [300, 3],
+    [Infinity, 4],
+  ],
+  agility: [
+    [100, 1],
+    [200, 2],
+    [300, 3],
+    [Infinity, 4],
+  ],
+};
+
+/** Points de caractéristique maximum dans une caractéristique, pour un budget donné. */
+export function maxPointsIn(stat: string, budget: number): number {
+  let left = budget;
+  let value = 0;
+  let from = 0;
+  for (const [to, price] of POINT_TIERS[stat] ?? []) {
+    const n = Math.min(to - from, Math.floor(left / price));
+    value += n;
+    left -= n * price;
+    if (n < to - from) break;
+    from = to;
+  }
+  return value;
 }
 
 export type Vec = Float64Array;
@@ -88,12 +146,13 @@ export function buildDamageModel(input: DamageModelInput) {
     if (!statFeature.has(stat)) statFeature.set(stat, feature(stat, "power"));
     damageFeature.set(e, feature("damage", damage));
   }
-  const CRIT = feature("critical");
-  const CRIT_DMG = feature("criticalDamage");
-  const MELEE = spells.some((s) => s.grade.range <= 1)
-    ? feature("spellDamagePct", "meleeDamagePct")
-    : -1;
-  const RANGED = spells.some((s) => s.grade.range > 1)
+  const withCrit = input.critical !== false;
+  const CRIT = withCrit ? feature("critical") : -1;
+  const CRIT_DMG = withCrit ? feature("criticalDamage") : -1;
+  // Type d'attaque : imposé par le joueur, sinon d'après la portée de chaque sort.
+  const isMelee = (s: TurnSpell) => (input.attack ? input.attack === "melee" : s.grade.range <= 1);
+  const MELEE = spells.some(isMelee) ? feature("spellDamagePct", "meleeDamagePct") : -1;
+  const RANGED = spells.some((s) => !isMelee(s))
     ? feature("spellDamagePct", "rangedDamagePct")
     : -1;
 
@@ -131,7 +190,7 @@ export function buildDamageModel(input: DamageModelInput) {
           critRolls: critLine ? [critLine.min, critLine.max] : null,
         };
       });
-      return [s, { pct: grade.range <= 1 ? MELEE : RANGED, critBase: grade.criticalChance, lines }];
+      return [s, { pct: isMelee(s) ? MELEE : RANGED, critBase: grade.criticalChance, lines }];
     }),
   );
 
@@ -142,14 +201,14 @@ export function buildDamageModel(input: DamageModelInput) {
    * regroupée, et ne dépasse jamais la version sans arrondi : les bornes des
    * optimiseurs restent valables.
    */
-  function objective(gear: Vec): number {
-    const f = (i: number) => (i < 0 ? 0 : gear[i]! + baseVec[i]!);
+  function objective(gear: Vec, extra?: Vec): number {
+    const f = (i: number) => (i < 0 ? 0 : gear[i]! + baseVec[i]! + (extra ? extra[i]! : 0));
     if (Math.min(f(AP), STAT_CAPS.ap) < apTarget) return -Infinity;
     const critDamage = f(CRIT_DMG);
     const critical = f(CRIT);
-    return bestComboDamage(spells, groups, apTarget, (s) => {
+    const perCast = (s: TurnSpell) => {
       const p = prepared.get(s)!;
-      const chance = Math.min(100, Math.max(0, p.critBase + critical)) / 100;
+      const chance = withCrit ? Math.min(100, Math.max(0, p.critBase + critical)) / 100 : 0;
       const pct = 100 + f(p.pct);
       let sum = 0;
       for (const line of p.lines) {
@@ -164,8 +223,16 @@ export function buildDamageModel(input: DamageModelInput) {
         sum += (1 - chance) * normal + chance * crit;
       }
       return sum;
-    });
+    };
+    if (input.mode === "rotation") return spells.reduce((sum, s) => sum + perCast(s), 0);
+    return bestComboDamage(spells, groups, apTarget, perCast);
   }
+
+  /** Vecteur des caractéristiques regroupées apporté par des points de caractéristique. */
+  const pointsVec = (points: Partial<Record<StatKey, number>>) =>
+    vecOf(
+      (Object.entries(points) as [StatKey, number][]).map(([stat, value]) => ({ stat, value })),
+    );
 
   // ── Panoplies : bonus cumulé selon le nombre d'objets, apports marginaux ──
   const setIndex = new Map<number, number>();
@@ -255,6 +322,7 @@ export function buildDamageModel(input: DamageModelInput) {
     }
     // Les PA visés sont obligatoires : un total en dessous est impossible.
     if (stat === "ap") lo = Math.max(lo, apTarget);
+    if (input.pointsBudget) hi += maxPointsIn(stat, input.pointsBudget);
     const range: [number, number] = [lo, hi];
     totalRange.set(stat, range);
     return range;
@@ -314,6 +382,10 @@ export function buildDamageModel(input: DamageModelInput) {
     d.rise.forEach((x) => allStats.add(x));
     d.fall.forEach((x) => allStats.add(x));
   }
+  // Les exigences minimales du joueur (PV, PM, résistances…) protègent aussi leurs
+  // caractéristiques : un remplacement ne doit pas les faire baisser.
+  const minimumStats = Object.keys(input.minimums ?? {}) as StatKey[];
+  minimumStats.forEach((x) => allStats.add(x));
   const condStats = [...allStats];
   const rawOf = (effects: readonly { stat: StatKey | null; value: number }[], stat: StatKey) =>
     effects.reduce((sum, e) => (e.stat === stat ? sum + e.value : sum), 0);
@@ -376,6 +448,7 @@ export function buildDamageModel(input: DamageModelInput) {
       if (c.own.setsRise) counts.setsRise++;
       if (c.own.setsFall) counts.setsFall++;
     }
+    for (const x of minimumStats) counts.fall.set(x, (counts.fall.get(x) ?? 0) + 1_000_000);
   };
   const safeSwap = (a: Cand, b: Cand | null) => {
     if (b && b.criteriaKey !== null && b.criteriaKey !== a.criteriaKey) return false;
@@ -482,6 +555,7 @@ export function buildDamageModel(input: DamageModelInput) {
         hi += Math.max(0, ...values);
       }
       if (stat === "ap") lo = Math.max(lo, apTarget);
+      if (input.pointsBudget) hi += maxPointsIn(stat, input.pointsBudget);
       const range: [number, number] = [lo, hi];
       ranges.set(stat, range);
       return range;
@@ -529,7 +603,10 @@ export function buildDamageModel(input: DamageModelInput) {
 
   const itemById = new Map(input.items.map((i) => [i.id, i]));
   /** Dégâts exacts d'un stuff donné par ses objets (bonus de panoplie compris). */
-  function evaluateSlots(slots: Partial<Record<SlotId, number>>): number {
+  function evaluateSlots(
+    slots: Partial<Record<SlotId, number>>,
+    points?: Partial<Record<StatKey, number>>,
+  ): number {
     const gear = new Float64Array(D);
     const counts = new Map<number, number>();
     for (const id of Object.values(slots)) {
@@ -544,22 +621,30 @@ export function buildDamageModel(input: DamageModelInput) {
       const tier = setTiers[s]![Math.min(n, setTiers[s]!.length - 1)]!;
       for (let d = 0; d < D; d++) gear[d]! += tier[d]!;
     }
-    return objective(gear);
+    return objective(gear, points ? pointsVec(points) : undefined);
   }
 
   /**
    * Le stuff respecte-t-il les conditions de tous ses objets ? Totaux bruts :
    * base (points, parchemins, PA, PM) + objets + bonus de panoplie.
    */
-  function feasible(slots: Partial<Record<SlotId, number>>): boolean {
+  function feasible(
+    slots: Partial<Record<SlotId, number>>,
+    points?: Partial<Record<StatKey, number>>,
+  ): boolean {
     const items = Object.values(slots)
       .map((id) => (id !== undefined ? itemById.get(id) : undefined))
       .filter((i): i is DofusItem => !!i);
     const totals = new Map<StatKey, number>(Object.entries(input.base) as [StatKey, number][]);
-    const add = (effects: DofusItem["effects"]) => {
+    const add = (effects: readonly { stat: StatKey | null; value: number }[]) => {
       for (const e of effects) if (e.stat) totals.set(e.stat, (totals.get(e.stat) ?? 0) + e.value);
     };
     items.forEach((i) => add(i.effects));
+    if (points) {
+      add(
+        (Object.entries(points) as [StatKey, number][]).map(([stat, value]) => ({ stat, value })),
+      );
+    }
     const counts = new Map<number, number>();
     for (const i of items) {
       const s = setOfItem.get(i.id);
@@ -579,11 +664,16 @@ export function buildDamageModel(input: DamageModelInput) {
       add(bonuses[tier] ?? []);
     }
     const context = { total: (k: StatKey) => totals.get(k) ?? 0, activeSets };
-    return items.every((i) => criteriaMet(i.criteria, context));
+    const minimumsMet = (Object.entries(input.minimums ?? {}) as [StatKey, number][]).every(
+      ([stat, min]) => (totals.get(stat) ?? 0) >= min,
+    );
+    return minimumsMet && items.every((i) => criteriaMet(i.criteria, context));
   }
 
   return {
     feasible,
+    pointsVec,
+    withCrit,
     /** Conditions simplifiées d'un objet (null : toujours remplies). */
     criteriaOf,
     D,

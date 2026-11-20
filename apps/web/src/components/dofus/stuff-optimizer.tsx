@@ -2,31 +2,33 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { BadgeCheck, ExternalLink, Loader2, WandSparkles } from "lucide-react";
+import { BadgeCheck, Check, ExternalLink, Loader2, WandSparkles } from "lucide-react";
 import {
   CHARACTERISTICS,
   ELEMENTS,
   LEVEL_MAX,
+  OPTIMIZER_AP_MIN,
+  OPTIMIZER_SPELLS_MAX,
+  RESISTANCE_STATS,
+  SCROLL_MAX,
   SLOTS,
   STATS,
+  STAT_CAPS,
   clampLevel,
-  computeCharacter,
   conditionsMet,
   conditionsText,
-  OPTIMIZER_AP_MIN,
-  OPTIMIZER_ELEMENTS,
-  STAT_CAPS,
+  spellGradeAt,
   type Characteristic,
   type DofusBreed,
   type DofusElement,
-  type ExoStat,
-  type Exos,
-  type TurnCombo,
   type DofusItem,
   type DofusSet,
-  type ElementShare,
+  type DofusSpell,
+  type ExoStat,
+  type Exos,
+  type LineDamage,
   type SlotId,
-  type StatKey,
+  type StatTotals,
 } from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,16 +55,33 @@ interface JobView {
   elapsedMs: number;
 }
 
+interface SpellResult {
+  spellId: number;
+  name: string;
+  icon: string | null;
+  apCost: number;
+  average: number;
+  lines: LineDamage[];
+  criticalChance: number;
+}
+
 interface OptimizeResponse {
   breed: DofusBreed;
   level: number;
-  elements: DofusElement[];
   ap: number;
   exos: Exos;
-  classElements: ElementShare[];
+  critical: boolean;
+  attack: "ranged" | "melee";
+  scrolls: number;
+  minimums: Minimums;
   points: Record<Characteristic, number>;
-  scrolls: Record<Characteristic, number>;
   slots: Partial<Record<SlotId, number>>;
+  damage: number;
+  spells: SpellResult[];
+  hp: number;
+  totals: StatTotals;
+  items: DofusItem[];
+  sets: DofusSet[];
   proof: {
     proven: boolean;
     damage: number;
@@ -73,9 +92,14 @@ interface OptimizeResponse {
     ms: number;
     localDamage: number;
   };
-  combo: TurnCombo;
-  items: DofusItem[];
-  sets: DofusSet[];
+}
+
+type ResistanceElement = keyof typeof RESISTANCE_STATS;
+interface Minimums {
+  hp?: number;
+  mp?: number;
+  range?: number;
+  resistances: Partial<Record<ResistanceElement, number>>;
 }
 
 const EXO_CHOICES: { stat: ExoStat; label: string }[] = [
@@ -83,55 +107,183 @@ const EXO_CHOICES: { stat: ExoStat; label: string }[] = [
   { stat: "mp", label: "PM" },
   { stat: "range", label: "PO" },
 ];
-
 const AP_CHOICES = Array.from(
   { length: STAT_CAPS.ap - OPTIMIZER_AP_MIN + 1 },
   (_, i) => OPTIMIZER_AP_MIN + i,
 );
+const RESISTANCES: ResistanceElement[] = ["neutral", "earth", "fire", "water", "air"];
 
 const NO_SPIN =
   "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
 
-const SUMMARY: StatKey[] = [
-  "ap",
-  "mp",
-  "range",
-  "vitality",
-  "wisdom",
-  "strength",
-  "intelligence",
-  "chance",
-  "agility",
-  "power",
-  "critical",
-  "damage",
-  "summons",
-];
+/** Nombre saisi (vide : pas d'exigence). */
+const numberOrUndefined = (text: string) => {
+  const n = Math.trunc(Number(text));
+  return text.trim() === "" || !Number.isFinite(n) ? undefined : n;
+};
 
-/** Optimiseur : classe + niveau → meilleur stuff trouvé par l'algorithme. */
+/** Boutons à choix unique (ex. Distance / Mêlée). */
+function Choice<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex gap-1" role="radiogroup">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={cn(
+            "h-9 rounded-md border px-3 text-sm transition-colors hover:bg-accent",
+            value === o.value ? "border-primary bg-primary/10 font-semibold" : "bg-card/60",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Champ numérique court avec libellé. */
+function NumberField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  icon,
+  className,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  icon?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <label className={cn("grid gap-1 text-sm font-medium", className)}>
+      <span className="flex items-center gap-1.5">
+        {icon}
+        {label}
+      </span>
+      <Input
+        type="number"
+        inputMode="numeric"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn("h-9 w-24 tabular-nums", NO_SPIN)}
+      />
+    </label>
+  );
+}
+
+const range = (r: { min: number; max: number }) =>
+  r.min === r.max ? String(r.min) : `${r.min} – ${r.max}`;
+
+/**
+ * Optimiseur : le joueur choisit sa classe, son niveau et les sorts qu'il veut
+ * évaluer, puis ses exigences ; le solveur trouve le stuff qui fait le plus de
+ * dégâts sur ces sorts en respectant tout, et le prouve.
+ */
 export function StuffOptimizer() {
   const router = useRouter();
   const { breeds, error: breedsError } = useBreeds();
   const [breedId, setBreedId] = React.useState<number | null>(null);
   const [level, setLevel] = React.useState(LEVEL_MAX);
-  const [elements, setElements] = React.useState<DofusElement[]>([]);
+  const [classSpells, setClassSpells] = React.useState<Record<number, DofusSpell[]>>({});
+  const [spellIds, setSpellIds] = React.useState<number[]>([]);
   const [ap, setAp] = React.useState<number>(STAT_CAPS.ap);
   const [exos, setExos] = React.useState<Exos>({ ap: false, mp: false, range: false });
+  const [critical, setCritical] = React.useState<"yes" | "no">("yes");
+  const [attack, setAttack] = React.useState<"ranged" | "melee">("ranged");
+  const [scrolls, setScrolls] = React.useState("100");
+  const [hp, setHp] = React.useState("");
+  const [mp, setMp] = React.useState("");
+  const [po, setPo] = React.useState("");
+  const [res, setRes] = React.useState<Record<ResistanceElement, string>>({
+    neutral: "",
+    earth: "",
+    fire: "",
+    water: "",
+    air: "",
+  });
   const [running, setRunning] = React.useState(false);
   const [job, setJob] = React.useState<JobView | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<OptimizeResponse | null>(null);
 
+  // Sorts de la classe choisie (chargés une fois par classe).
+  React.useEffect(() => {
+    if (breedId === null || classSpells[breedId]) return;
+    apiFetch<{ spells: DofusSpell[] }>(`/dofus/classes/${breedId}/spells`)
+      .then(({ spells }) => setClassSpells((m) => ({ ...m, [breedId]: spells })))
+      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : "Sorts indisponibles."));
+  }, [breedId, classSpells]);
+
+  const damageSpells = (breedId !== null ? (classSpells[breedId] ?? null) : null)?.filter((s) => {
+    const grade = spellGradeAt(s, level);
+    return grade && grade.lines.length > 0;
+  });
+  const selected = new Set(spellIds);
+  const selectedAp = (damageSpells ?? [])
+    .filter((s) => selected.has(s.id))
+    .reduce((sum, s) => sum + (spellGradeAt(s, level)?.apCost ?? 0), 0);
+
+  function chooseBreed(id: number) {
+    if (id === breedId) return;
+    setBreedId(id);
+    setSpellIds([]);
+    setResult(null);
+  }
+
+  function toggleSpell(id: number) {
+    setSpellIds((list) =>
+      list.includes(id)
+        ? list.filter((x) => x !== id)
+        : list.length >= OPTIMIZER_SPELLS_MAX
+          ? list
+          : [...list, id],
+    );
+  }
+
   async function run() {
-    if (breedId === null || elements.length === 0) return;
+    if (breedId === null || spellIds.length === 0) return;
     setRunning(true);
     setError(null);
     setJob(null);
+    const minimums: Minimums = {
+      hp: numberOrUndefined(hp),
+      mp: numberOrUndefined(mp),
+      range: numberOrUndefined(po),
+      resistances: Object.fromEntries(
+        RESISTANCES.map((e) => [e, numberOrUndefined(res[e])]).filter(([, v]) => v !== undefined),
+      ),
+    };
     try {
       // Le calcul tourne en tâche de fond : on le lance puis on suit sa progression.
       let { job: current } = await apiFetch<{ job: JobView }>("/dofus/optimize", {
         method: "POST",
-        body: { breedId, level, elements, ap, exos },
+        body: {
+          breedId,
+          level,
+          spellIds: spellIds.filter((id) => damageSpells?.some((s) => s.id === id)),
+          ap,
+          exos,
+          critical: critical === "yes",
+          attack,
+          scrolls: Math.min(SCROLL_MAX, Math.max(0, numberOrUndefined(scrolls) ?? 0)),
+          minimums,
+        },
       });
       setJob(current);
       while (current.status === "queued" || current.status === "running") {
@@ -150,21 +302,6 @@ export function StuffOptimizer() {
     }
   }
 
-  const character = React.useMemo(
-    () =>
-      result
-        ? computeCharacter({
-            level: result.level,
-            base: result.points,
-            scrolls: result.scrolls,
-            items: result.items,
-            sets: result.sets,
-            exos: result.exos,
-          })
-        : null,
-    [result],
-  );
-
   function openInSimulator() {
     if (!result) return;
     try {
@@ -175,13 +312,10 @@ export function StuffOptimizer() {
           level: result.level,
           slots: result.slots,
           base: result.points,
-          scrolls: result.scrolls,
+          scrolls: Object.fromEntries(CHARACTERISTICS.map((c) => [c, result.scrolls])),
           breedId: result.breed.id,
           exos: result.exos,
-          tags: {
-            elements: result.elements.filter((e) => e !== "neutral"),
-            classes: [result.breed.id],
-          },
+          tags: { elements: [], classes: [result.breed.id] },
         }),
       );
     } catch {
@@ -194,10 +328,10 @@ export function StuffOptimizer() {
 
   return (
     <div className="space-y-6">
-      {/* Paramètres */}
-      <section className="grid gap-4 rounded-xl border bg-card/70 p-4">
+      <section className="grid gap-5 rounded-xl border bg-card/70 p-4">
+        {/* 1. Classe et niveau */}
         <fieldset>
-          <legend className="mb-2 text-sm font-medium">Classe à optimiser</legend>
+          <legend className="mb-2 text-sm font-medium">1. Classe</legend>
           {breedsError ? (
             <p className="text-sm text-destructive">{breedsError}</p>
           ) : !breeds ? (
@@ -211,7 +345,7 @@ export function StuffOptimizer() {
                 <button
                   key={b.id}
                   type="button"
-                  onClick={() => setBreedId(b.id)}
+                  onClick={() => chooseBreed(b.id)}
                   aria-pressed={b.id === breedId}
                   className={cn(
                     "flex flex-col items-center gap-1 rounded-lg border p-1.5 text-[0.7rem] transition-colors hover:bg-accent",
@@ -225,92 +359,198 @@ export function StuffOptimizer() {
             </div>
           )}
         </fieldset>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="grid gap-1 text-sm font-medium">
-            Niveau
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={LEVEL_MAX}
-              value={level}
-              onChange={(e) => setLevel(clampLevel(Number(e.target.value)))}
-              className={cn("w-24 tabular-nums", NO_SPIN)}
-            />
-          </label>
-          <fieldset className="grid gap-1">
-            <legend className="mb-1 text-sm font-medium">Éléments joués</legend>
-            <div className="flex flex-wrap gap-1.5">
-              {OPTIMIZER_ELEMENTS.map((e) => {
-                const on = elements.includes(e);
-                const el = ELEMENTS[e];
+        <label className="grid w-fit gap-1 text-sm font-medium">
+          Niveau
+          <Input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={LEVEL_MAX}
+            value={level}
+            onChange={(e) => setLevel(clampLevel(Number(e.target.value)))}
+            className={cn("w-24 tabular-nums", NO_SPIN)}
+          />
+        </label>
+
+        {/* 2. Sorts à évaluer */}
+        <fieldset>
+          <legend className="mb-2 text-sm font-medium">
+            2. Sorts à évaluer{" "}
+            <span className="font-normal text-muted-foreground">
+              ({spellIds.length} choisi{spellIds.length > 1 ? "s" : ""}
+              {selectedAp > 0 && ` · ${selectedAp} PA au total`})
+            </span>
+          </legend>
+          {breedId === null ? (
+            <p className="text-sm text-muted-foreground">Choisissez d&apos;abord une classe.</p>
+          ) : !damageSpells ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              Chargement des sorts…
+            </p>
+          ) : (
+            <ul className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {damageSpells.map((s) => {
+                const grade = spellGradeAt(s, level)!;
+                const on = selected.has(s.id);
+                const elements = [...new Set(grade.lines.map((l) => l.element))] as DofusElement[];
                 return (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => toggleSpell(s.id)}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg border p-1.5 text-left text-sm transition-colors hover:bg-accent",
+                        on ? "border-primary bg-primary/10" : "bg-card/60",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex size-4 shrink-0 items-center justify-center rounded border",
+                          on && "border-primary bg-primary text-primary-foreground",
+                        )}
+                        aria-hidden="true"
+                      >
+                        {on && <Check className="size-3" />}
+                      </span>
+                      <RemoteIcon src={s.icon} className="size-8 shrink-0" />
+                      <span className="min-w-0 flex-1 leading-tight">
+                        <span className="block truncate font-medium">{s.name}</span>
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          {grade.apCost} PA
+                          {elements.map((e) => (
+                            <StatIcon key={e} stat={ELEMENTS[e].damage} className="size-3" />
+                          ))}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </fieldset>
+
+        {/* 3. Exigences */}
+        <fieldset className="grid gap-3">
+          <legend className="mb-1 text-sm font-medium">
+            3. Exigences du stuff{" "}
+            <span className="font-normal text-muted-foreground">(minimums, facultatifs)</span>
+          </legend>
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="grid gap-1">
+              <span className="text-sm font-medium">PA</span>
+              <div className="flex gap-1" role="radiogroup">
+                {AP_CHOICES.map((n) => (
                   <button
-                    key={e}
+                    key={n}
                     type="button"
-                    aria-pressed={on}
-                    onClick={() =>
-                      setElements((list) => (on ? list.filter((x) => x !== e) : [...list, e]))
-                    }
+                    role="radio"
+                    aria-checked={ap === n}
+                    onClick={() => setAp(n)}
                     className={cn(
-                      "flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm transition-colors hover:bg-accent",
-                      on
-                        ? "border-primary bg-primary/10 font-semibold"
+                      "flex h-9 min-w-9 items-center justify-center rounded-md border px-2 text-sm tabular-nums transition-colors hover:bg-accent",
+                      ap === n
+                        ? "border-gold/60 bg-gold-soft font-semibold text-gold"
+                        : "bg-card/60",
+                    )}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid gap-1">
+              <span className="text-sm font-medium">Exos possibles</span>
+              <div className="flex gap-1">
+                {EXO_CHOICES.map(({ stat, label }) => (
+                  <button
+                    key={stat}
+                    type="button"
+                    aria-pressed={exos[stat]}
+                    onClick={() => setExos((x) => ({ ...x, [stat]: !x[stat] }))}
+                    className={cn(
+                      "flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-sm transition-colors hover:bg-accent",
+                      exos[stat]
+                        ? "border-gold/60 bg-gold-soft font-semibold text-gold"
                         : "bg-card/60 text-muted-foreground",
                     )}
                   >
-                    <StatIcon stat={el.damage} className="size-4" />
-                    {el.label}
+                    <StatIcon stat={stat} className="size-4" />
+                    Exo {label}
                   </button>
-                );
-              })}
+                ))}
+              </div>
             </div>
-          </fieldset>
-          <fieldset className="grid gap-1">
-            <legend className="mb-1 text-sm font-medium">PA du stuff</legend>
-            <div className="flex gap-1" role="radiogroup">
-              {AP_CHOICES.map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  role="radio"
-                  aria-checked={ap === n}
-                  onClick={() => setAp(n)}
-                  className={cn(
-                    "flex h-9 min-w-9 items-center justify-center gap-1 rounded-md border px-2 text-sm tabular-nums transition-colors hover:bg-accent",
-                    ap === n ? "border-gold/60 bg-gold-soft font-semibold text-gold" : "bg-card/60",
-                  )}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-          <fieldset className="grid gap-1">
-            <legend className="mb-1 text-sm font-medium">Exos possibles</legend>
-            <div className="flex gap-1">
-              {EXO_CHOICES.map(({ stat, label }) => (
-                <button
-                  key={stat}
-                  type="button"
-                  aria-pressed={exos[stat]}
-                  title={`Le joueur peut ajouter +1 ${label} par forgemagie sur un objet`}
-                  onClick={() => setExos((x) => ({ ...x, [stat]: !x[stat] }))}
-                  className={cn(
-                    "flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-sm transition-colors hover:bg-accent",
-                    exos[stat]
-                      ? "border-gold/60 bg-gold-soft font-semibold text-gold"
-                      : "bg-card/60 text-muted-foreground",
-                  )}
-                >
-                  <StatIcon stat={stat} className="size-4" />
-                  Exo {label}
-                </button>
-              ))}
-            </div>
-          </fieldset>
+          </div>
+          <div className="flex flex-wrap items-end gap-4">
+            <NumberField
+              label="PV"
+              value={hp}
+              onChange={setHp}
+              placeholder="ex. 4000"
+              icon={<StatIcon stat="vitality" className="size-4" />}
+            />
+            <NumberField
+              label="PM"
+              value={mp}
+              onChange={setMp}
+              placeholder="ex. 5"
+              icon={<StatIcon stat="mp" className="size-4" />}
+            />
+            <NumberField
+              label="PO"
+              value={po}
+              onChange={setPo}
+              placeholder="ex. 6"
+              icon={<StatIcon stat="range" className="size-4" />}
+            />
+            {RESISTANCES.map((e) => (
+              <NumberField
+                key={e}
+                label={`% Ré ${ELEMENTS[e].label}`}
+                value={res[e]}
+                onChange={(v) => setRes((r) => ({ ...r, [e]: v }))}
+                placeholder="ex. 30"
+                icon={<StatIcon stat={RESISTANCE_STATS[e]} className="size-4" />}
+              />
+            ))}
+          </div>
+        </fieldset>
+
+        {/* 4. Calcul */}
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="grid gap-1">
+            <span className="text-sm font-medium">Critiques</span>
+            <Choice
+              value={critical}
+              onChange={setCritical}
+              options={[
+                { value: "yes", label: "Pondérés" },
+                { value: "no", label: "Sans critique" },
+              ]}
+            />
+          </div>
+          <div className="grid gap-1">
+            <span className="text-sm font-medium">Attaque</span>
+            <Choice
+              value={attack}
+              onChange={setAttack}
+              options={[
+                { value: "ranged", label: "Distance" },
+                { value: "melee", label: "Mêlée" },
+              ]}
+            />
+          </div>
+          <NumberField
+            label="Parchotage (0 à 100)"
+            value={scrolls}
+            onChange={setScrolls}
+            className="w-40"
+          />
           <Button
-            disabled={breedId === null || elements.length === 0 || running}
+            disabled={breedId === null || spellIds.length === 0 || running}
             onClick={() => void run()}
           >
             {running ? (
@@ -325,7 +565,7 @@ export function StuffOptimizer() {
         {error && <p className="text-sm text-destructive">{error}</p>}
       </section>
 
-      {result && character && (
+      {result && (
         <section className="space-y-4" aria-live="polite">
           {/* En-tête du résultat */}
           <div className="flex flex-wrap items-center gap-4 rounded-xl border border-gold/40 bg-gold-soft p-4">
@@ -334,33 +574,18 @@ export function StuffOptimizer() {
               <p className="font-display text-xl tracking-wide">
                 {result.breed.name} niveau {result.level}
               </p>
-              <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
-                {result.elements.map((e) => (
-                  <span key={e} className="flex items-center gap-1">
-                    <StatIcon stat={ELEMENTS[e].damage} className="size-3.5" />
-                    <span className={statTone(ELEMENTS[e].damage)}>{ELEMENTS[e].label}</span>
-                  </span>
-                ))}
-                <span>· {result.ap} PA</span>
-                {EXO_CHOICES.filter(({ stat }) => result.exos[stat]).map(({ stat, label }) => (
-                  <span key={stat} className="font-semibold text-gold">
-                    · Exo {label}
-                  </span>
-                ))}
-                <span>
-                  · Points :{" "}
-                  {CHARACTERISTICS.filter((c) => result.points[c] > 0)
-                    .map((c) => `${result.points[c]} ${STATS[c]}`)
-                    .join(", ")}{" "}
-                  (+ parchemins)
-                </span>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {result.spells.length} sort{result.spells.length > 1 ? "s" : ""} ·{" "}
+                {result.attack === "melee" ? "mêlée" : "distance"} ·{" "}
+                {result.critical ? "critiques pondérés" : "sans critique"} · parchotage{" "}
+                {result.scrolls}
               </p>
             </div>
             <div className="text-right">
               <p className="font-serif text-3xl font-bold tabular-nums">
-                {result.combo.damage.toLocaleString("fr-FR")}
+                {Math.round(result.damage).toLocaleString("fr-FR")}
               </p>
-              <p className="text-xs text-muted-foreground">dégâts moyens sur un tour</p>
+              <p className="text-xs text-muted-foreground">dégâts moyens, sorts choisis</p>
               {result.proof.proven ? (
                 <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
                   <BadgeCheck className="size-3.5" aria-hidden="true" />
@@ -388,72 +613,89 @@ export function StuffOptimizer() {
             </Button>
           </div>
 
-          {/* Combo du tour */}
+          {/* Dégâts par sort */}
           <section className="rounded-xl border bg-card/70 p-4">
-            <h2 className="mb-3 font-medium">
-              Meilleur combo sur {result.ap} PA{" "}
-              <span className="text-sm font-normal text-muted-foreground">
-                ({result.combo.apUsed} PA utilisés)
-              </span>
-            </h2>
-            {result.combo.casts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Aucun sort lançable.</p>
-            ) : (
-              <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {result.combo.casts.map((c) => (
-                  <li
-                    key={c.spellId}
-                    className="flex items-center gap-2.5 rounded-lg border bg-background/40 p-2.5"
-                  >
-                    <RemoteIcon src={c.icon} className="size-9 shrink-0" />
+            <h2 className="mb-3 font-medium">Dégâts par sort</h2>
+            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {result.spells.map((s) => (
+                <li key={s.spellId} className="rounded-lg border bg-background/40 p-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <RemoteIcon src={s.icon} className="size-9 shrink-0" />
                     <div className="min-w-0 flex-1 leading-tight">
-                      <p className="truncate font-medium">
-                        {c.casts > 1 && <span className="text-gold">{c.casts} × </span>}
-                        {c.name}
-                      </p>
+                      <p className="truncate font-medium">{s.name}</p>
                       <p className="text-xs text-muted-foreground">
-                        {c.apCost} PA · {c.perCast} par lancer
+                        {s.apCost} PA{result.critical && ` · ${s.criticalChance} % crit.`}
                       </p>
                     </div>
                     <p className="font-serif text-lg font-bold tabular-nums">
-                      {c.perCast * c.casts}
+                      {Math.round(s.average)}
                     </p>
-                  </li>
-                ))}
-              </ol>
-            )}
-            <p className="mt-3 text-xs text-muted-foreground">
-              Moyenne par lancer, coups critiques compris, sur une cible sans résistances. Une seule
-              variante de chaque sort et les limites de lancers par tour sont respectées.
-            </p>
+                  </div>
+                  <ul className="mt-1.5 grid gap-0.5 text-sm">
+                    {s.lines.map((line, i) => (
+                      <li key={i} className="flex items-center gap-1.5">
+                        <StatIcon stat={ELEMENTS[line.element].damage} className="size-3.5" />
+                        <span
+                          className={cn("tabular-nums", statTone(ELEMENTS[line.element].damage))}
+                        >
+                          {range(line.normal)}
+                        </span>
+                        {result.critical && line.critical && (
+                          <span className="ml-auto flex items-center gap-1">
+                            <StatIcon stat="critical" className="size-3.5" />
+                            <span
+                              className={cn(
+                                "tabular-nums",
+                                statTone(ELEMENTS[line.element].damage),
+                              )}
+                            >
+                              {range(line.critical)}
+                            </span>
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
           </section>
 
-          {/* Résumé des caractéristiques (sans points de caractéristique ni parchemins) */}
+          {/* Exigences et caractéristiques obtenues */}
           <ul className="flex flex-wrap gap-2 text-sm">
-            <li className="flex items-center gap-1.5 rounded-full border bg-card/70 px-3 py-1">
-              <StatIcon stat="vitality" className="size-3.5" />
-              <span className="font-semibold tabular-nums">{character.hp}</span> PV
-            </li>
-            {SUMMARY.filter((k) => character.totals[k] !== 0).map((k) => (
-              <li
-                key={k}
-                className="flex items-center gap-1.5 rounded-full border bg-card/70 px-3 py-1"
-              >
-                <StatIcon stat={k} className="size-3.5" />
-                <span className="font-semibold tabular-nums">{character.totals[k]}</span>
-                <span className="text-muted-foreground">{STATS[k]}</span>
-              </li>
+            <Requirement stat="vitality" label="PV" value={result.hp} min={result.minimums.hp} />
+            <Requirement stat="ap" label="PA" value={result.totals.ap} min={result.ap} />
+            <Requirement stat="mp" label="PM" value={result.totals.mp} min={result.minimums.mp} />
+            <Requirement
+              stat="range"
+              label="PO"
+              value={result.totals.range}
+              min={result.minimums.range}
+            />
+            {RESISTANCES.map((e) => (
+              <Requirement
+                key={e}
+                stat={RESISTANCE_STATS[e]}
+                label={`% Ré ${ELEMENTS[e].label}`}
+                value={result.totals[RESISTANCE_STATS[e]]}
+                min={result.minimums.resistances[e]}
+              />
             ))}
           </ul>
-
-          {character.activeSets.length > 0 && (
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+            Points de caractéristique choisis :
+            {CHARACTERISTICS.filter((c) => result.points[c] > 0).map((c) => (
+              <span key={c} className="flex items-center gap-1 text-foreground">
+                <StatIcon stat={c} className="size-3.5" />
+                <span className="font-semibold tabular-nums">{result.points[c]}</span> {STATS[c]}
+              </span>
+            ))}
+          </p>
+          {result.sets.length > 0 && (
             <ul className="flex flex-wrap gap-2 text-sm">
-              {character.activeSets.map((s) => (
-                <li
-                  key={s.set.id}
-                  className="rounded-md border border-gold/40 bg-gold-soft px-3 py-1"
-                >
-                  {s.set.name} · {s.count} objets
+              {result.sets.map((s) => (
+                <li key={s.id} className="rounded-md border border-gold/40 bg-gold-soft px-3 py-1">
+                  {s.name} · {result.items.filter((i) => s.itemIds.includes(i.id)).length} objets
                 </li>
               ))}
             </ul>
@@ -466,10 +708,7 @@ export function StuffOptimizer() {
               const item = id !== undefined ? itemById.get(id) : undefined;
               const ok =
                 !item ||
-                conditionsMet(item.conditions, {
-                  level: result.level,
-                  totals: character.totals,
-                });
+                conditionsMet(item.conditions, { level: result.level, totals: result.totals });
               return (
                 <li
                   key={slot.id}
@@ -501,7 +740,6 @@ export function StuffOptimizer() {
                           )}
                         >
                           Conditions : {conditionsText(item.conditions)}
-                          {!ok && " (non remplies)"}
                         </p>
                       )}
                     </>
@@ -513,18 +751,48 @@ export function StuffOptimizer() {
             })}
           </ul>
           <p className="text-xs text-muted-foreground">
-            Le stuff retenu est celui dont le meilleur combo de sorts (dans les éléments choisis,
-            avec les PA choisis) fait le plus de dégâts sur un tour, bonus de panoplie compris. «
-            Optimum prouvé » : un solveur d&apos;optimisation (programmation linéaire en nombres
-            entiers) a vérifié qu&apos;aucun autre stuff ne fait plus, parmi{" "}
-            {result.proof.considered.toLocaleString("fr-FR")} objets du niveau. Le stuff doit
-            atteindre ces PA, exo compris s&apos;il est coché ; les points de caractéristique sont
-            répartis dans les éléments choisis, avec les parchemins complets. Les conditions des
-            objets ne sont pas encore prises en compte.
+            Le stuff retenu fait le plus de dégâts possible sur les sorts choisis (un lancer
+            chacun), en respectant toutes les exigences et les conditions des objets, bonus de
+            panoplie compris. Les points de caractéristique sont répartis par l&apos;optimiseur. «
+            Optimum prouvé » : un solveur d&apos;optimisation a vérifié qu&apos;aucun autre stuff ne
+            fait plus, parmi {result.proof.considered.toLocaleString("fr-FR")} objets du niveau.
           </p>
         </section>
       )}
     </div>
+  );
+}
+
+/** Valeur obtenue, avec l'exigence minimale si le joueur en a fixé une. */
+function Requirement({
+  stat,
+  label,
+  value,
+  min,
+}: {
+  stat: Parameters<typeof StatIcon>[0]["stat"];
+  label: string;
+  value: number;
+  min?: number;
+}) {
+  const met = min === undefined || value >= min;
+  return (
+    <li
+      className={cn(
+        "flex items-center gap-1.5 rounded-full border px-3 py-1",
+        min !== undefined && (met ? "border-primary/40 bg-primary/5" : "border-destructive/50"),
+        min === undefined && "bg-card/70",
+      )}
+    >
+      <StatIcon stat={stat} className="size-3.5" />
+      <span className="font-semibold tabular-nums">{value}</span>
+      <span className="text-muted-foreground">{label}</span>
+      {min !== undefined && (
+        <span className={cn("text-xs", met ? "text-primary" : "text-destructive")}>
+          (min. {min})
+        </span>
+      )}
+    </li>
   );
 }
 
@@ -543,7 +811,9 @@ function JobProgress({ job }: { job: JobView | null }) {
       p.damage && p.upper && p.upper > p.damage
         ? ` · au plus ${Math.ceil(((p.upper - p.damage) / p.damage) * 100)} % de mieux possible`
         : "";
-    text = `Preuve d'optimalité en cours : meilleur stuff ${Math.round(p.damage ?? 0).toLocaleString("fr-FR")} dégâts${gap}`;
+    text = p.damage
+      ? `Preuve d'optimalité en cours : meilleur stuff ${Math.round(p.damage).toLocaleString("fr-FR")} dégâts${gap}`
+      : "Recherche d'un stuff qui remplit les exigences…";
   }
   return (
     <p className="pb-2 text-sm text-muted-foreground" aria-live="polite">

@@ -25,6 +25,8 @@ import {
   type SlotFamily,
   type SlotId,
   type TurnSpell,
+  POINT_TIERS,
+  maxPointsIn,
   type CriteriaTree,
   type StatKey,
   type Vec,
@@ -33,6 +35,8 @@ import {
 export interface MilpInput extends DamageModelInput {
   /** Un bon stuff de départ (recherche locale) : les cellules moins bonnes tombent vite. */
   initial?: Partial<Record<SlotId, number>>;
+  /** Points de caractéristique du stuff de départ (si l'optimiseur répartit les points). */
+  initialPoints?: Partial<Record<StatKey, number>>;
   timeLimitMs?: number;
   /** Fils de calcul HiGHS en parallèle (0 ou absent : dans le fil courant). */
   workers?: number;
@@ -51,6 +55,8 @@ export interface MilpProgress {
 
 export interface MilpResult {
   slots: Partial<Record<SlotId, number>>;
+  /** Points de caractéristique choisis (si l'optimiseur les répartit). */
+  points: Partial<Record<StatKey, number>>;
   /** Dégâts moyens du tour (formule de l'optimiseur, sans les arrondis du jeu). */
   damage: number;
   /** Vrai si toutes les cellules ont été écartées : aucun stuff ne fait mieux. */
@@ -174,6 +180,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   const pctDims = [MELEE, RANGED].filter((d) => d >= 0);
   // Au-delà de ce % critique, tous les sorts sont des coups critiques : inutile de distinguer.
   const critCap = 100 - Math.min(...input.spells.map((sp) => prepared.get(sp)!.critBase));
+  const withCrit = CRIT >= 0;
 
   // ── Candidats et panoplies utiles ───────────────────────────────────────
   const families = [...new Set(SLOTS.map((s) => s.family as SlotFamily))];
@@ -219,7 +226,11 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
 
   // ── Combos de sorts ─────────────────────────────────────────────────────
   const spells = input.spells;
-  const combos = enumerateCombos(spells, model.groups, apTarget);
+  // Rotation choisie : un seul « combo », chaque sort lancé une fois.
+  const combos: Combo[] =
+    input.mode === "rotation"
+      ? [spells.map((spell) => ({ spell, casts: 1 }))]
+      : enumerateCombos(spells, model.groups, apTarget);
 
   /** Expression linéaire U pour un combo et une cellule : constante + coefficients. */
   function comboLinear(combo: Combo, cell: Cell) {
@@ -229,14 +240,14 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       const p = prepared.get(spell)!;
       const pctIndex = pctDims.indexOf(p.pct);
       const factor = (casts * (100 + (pctIndex >= 0 ? cell.pctHi[pctIndex]! : 0))) / 100;
-      const pBar = Math.min(1, Math.max(0, (p.critBase + cell.critHi) / 100));
+      const pBar = withCrit ? Math.min(1, Math.max(0, (p.critBase + cell.critHi) / 100)) : 0;
       for (const line of p.lines) {
         const rc = line.crit === null ? line.normal : Math.max(line.crit, line.normal);
         const a = (1 - pBar) * line.normal + pBar * rc;
         constant += factor * a;
         coef[line.stat]! += (factor * a) / 100;
         coef[line.damage]! += factor;
-        if (line.crit !== null && cell.cdPositive) coef[CRIT_DMG]! += factor * pBar;
+        if (withCrit && line.crit !== null && cell.cdPositive) coef[CRIT_DMG]! += factor * pBar;
       }
     }
     // La base s'ajoute à la constante.
@@ -256,6 +267,39 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     return best;
   }
 
+  // ── Points de caractéristique (si l'optimiseur les répartit) ─────────────
+  // Une variable entière par palier de coût (1, 2, 3 puis 4 points) : le prix
+  // monte d'un palier à l'autre, l'optimiseur remplit donc les moins chers d'abord.
+  const pointVars: { stat: StatKey; var: string; width: number; price: number }[] = [];
+  if (input.pointsBudget) {
+    const statsWithPoints: StatKey[] = [
+      "vitality",
+      "wisdom",
+      "strength",
+      "intelligence",
+      "chance",
+      "agility",
+    ];
+    for (const stat of statsWithPoints) {
+      const cap = maxPointsIn(stat, input.pointsBudget);
+      let from = 0;
+      (POINT_TIERS[stat] ?? []).forEach(([to, price], t) => {
+        const width = Math.min(to, cap) - from;
+        if (width > 0) pointVars.push({ stat, var: `p_${stat}_${t}`, width, price });
+        from = to;
+      });
+    }
+  }
+  /** Points lus dans une solution du solveur. */
+  const pointsFrom = (columns: Record<string, { Primal: number }>) => {
+    const points: Partial<Record<StatKey, number>> = {};
+    for (const pv of pointVars) {
+      const n = Math.round(columns[pv.var]?.Primal ?? 0);
+      if (n > 0) points[pv.stat] = (points[pv.stat] ?? 0) + n;
+    }
+    return points;
+  };
+
   // ── Programme linéaire d'une cellule ────────────────────────────────────
   /** Terme « Σ coef × caractéristique » écrit avec les variables objets et panoplies. */
   function featureTerms(weights: Vec): string[] {
@@ -273,6 +317,11 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
           terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${s.var}_${n}`);
         }
       });
+    }
+    for (const pv of pointVars) {
+      let w = 0;
+      for (const [i, c] of model.contrib.get(pv.stat) ?? []) w += weights[i]! * c;
+      if (Math.abs(w) > 1e-9) terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${pv.var}`);
     }
     return terms;
   }
@@ -314,6 +363,16 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     );
   }
   common.push(row("ap", featureTerms(unit(AP)), ">=", apTarget - baseVec[AP]!));
+  if (pointVars.length > 0) {
+    common.push(
+      row(
+        "points",
+        pointVars.map((pv) => `+ ${pv.price} ${pv.var}`),
+        "<=",
+        input.pointsBudget!,
+      ),
+    );
+  }
   const binaries = [
     ...cands.map((x) => x.var),
     ...sets.flatMap((s) => s.tiers.map((_, n) => `${s.var}_${n}`)),
@@ -357,6 +416,11 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         largest = Math.max(largest, Math.abs(w));
       });
       size += largest;
+    }
+    for (const pv of pointVars) {
+      if (pv.stat !== stat) continue;
+      terms.push(`+ ${pv.var}`);
+      size += pv.width;
     }
     return { terms, constant: input.base[stat] ?? 0, size };
   }
@@ -421,7 +485,13 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     const criteria = item ? model.criteriaOf(item) : null;
     if (criteria) encode(criteria, x.var, `cond${i}`);
   });
+  // Exigences minimales du joueur (PV, PM, PO, % résistance…), sur les totaux bruts.
+  for (const [stat, min] of Object.entries(input.minimums ?? {}) as [StatKey, number][]) {
+    const { terms, constant } = statExpression(stat);
+    common.push(row(`min_${stat}`, terms, ">=", min - constant));
+  }
 
+  const pointBounds = pointVars.map((pv) => ` 0 <= ${pv.var} <= ${pv.width}`);
   function buildLps(cell: Cell): {
     constant: number;
     relaxed: string;
@@ -445,18 +515,20 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       rows.push(row(`pct${k}_lo`, terms, ">=", cell.pctLo[k]! - baseVec[d]!));
       rows.push(row(`pct${k}_hi`, terms, "<=", cell.pctHi[k]! - baseVec[d]!));
     });
-    rows.push(
-      row(
-        "crit_dmg",
-        featureTerms(unit(CRIT_DMG)),
-        cell.cdPositive ? ">=" : "<=",
-        (cell.cdPositive ? 0 : -1) - baseVec[CRIT_DMG]!,
-      ),
-    );
-    const critTerms = featureTerms(unit(CRIT));
-    rows.push(row("crit_lo", critTerms, ">=", cell.critLo - baseVec[CRIT]!));
-    if (cell.critHi < critCap) {
-      rows.push(row("crit_hi", critTerms, "<=", cell.critHi - baseVec[CRIT]!));
+    if (withCrit) {
+      rows.push(
+        row(
+          "crit_dmg",
+          featureTerms(unit(CRIT_DMG)),
+          cell.cdPositive ? ">=" : "<=",
+          (cell.cdPositive ? 0 : -1) - baseVec[CRIT_DMG]!,
+        ),
+      );
+      const critTerms = featureTerms(unit(CRIT));
+      rows.push(row("crit_lo", critTerms, ">=", cell.critLo - baseVec[CRIT]!));
+      if (cell.critHi < critCap) {
+        rows.push(row("crit_hi", critTerms, "<=", cell.critHi - baseVec[CRIT]!));
+      }
     }
     // Combos : on écarte ceux qu'un autre combo bat pour TOUT stuff possible.
     const linears = combos.map((combo) => comboLinear(combo, cell));
@@ -483,14 +555,23 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       return {
         constant,
         // Relaxation continue (variables entre 0 et 1) : borne rapide, souvent suffisante.
-        relaxed: [...head, "Bounds", ...binaries.map((b) => ` 0 <= ${b} <= 1`), "End"].join("\n"),
+        relaxed: [
+          ...head,
+          "Bounds",
+          ...binaries.map((b) => ` 0 <= ${b} <= 1`),
+          ...pointBounds,
+          "End",
+        ].join("\n"),
         /** Programme en nombres entiers, avec des objets éventuellement fixés. */
         /** Avec un seuil : seuls les stuffs qui le dépassent sont admis (« au moins »). */
         lp: (fixed: Map<string, 0 | 1>, cutoff?: number) =>
           [
             ...head,
             ...(cutoff === undefined ? [] : [row("cutoff", featureTerms(coef), ">=", cutoff)]),
-            ...(fixed.size > 0 ? ["Bounds", ...[...fixed].map(([v, x]) => ` ${v} = ${x}`)] : []),
+            "Bounds",
+            ...pointBounds,
+            ...[...fixed].map(([v, x]) => ` ${v} = ${x}`),
+            ...(pointVars.length > 0 ? ["General", ...pointVars.map((pv) => ` ${pv.var}`)] : []),
             "Binary",
             ...binaries.map((b) => ` ${b}`),
             "End",
@@ -529,18 +610,20 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   // ── Recherche par cellules ──────────────────────────────────────────────
   let bestDamage = -Infinity;
   let bestSlots: Partial<Record<SlotId, number>> = {};
-  // Le stuff de départ ne sert que s'il respecte toutes les conditions.
-  if (input.initial && model.feasible(input.initial)) {
-    bestDamage = model.evaluateSlots(input.initial);
+  let bestPoints: Partial<Record<StatKey, number>> = {};
+  // Le stuff de départ ne sert que s'il respecte toutes les conditions et exigences.
+  if (input.initial && model.feasible(input.initial, input.initialPoints)) {
+    bestDamage = model.evaluateSlots(input.initial, input.initialPoints);
     bestSlots = { ...input.initial };
+    bestPoints = { ...(input.initialPoints ?? {}) };
   }
 
   // Cellules les plus prometteuses d'abord (borne de la cellule mère la plus haute).
-  const queue: Cell[] = [true, false].map((cdPositive) => ({
+  const queue: Cell[] = (withCrit ? [true, false] : [true]).map((cdPositive) => ({
     pctLo: pctDims.map((d) => extreme(d, -1)),
     pctHi: pctDims.map((d) => extreme(d, 1)),
-    critLo: extreme(CRIT, -1),
-    critHi: Math.min(extreme(CRIT, 1), critCap),
+    critLo: withCrit ? extreme(CRIT, -1) : 0,
+    critHi: withCrit ? Math.min(extreme(CRIT, 1), critCap) : 0,
     cdPositive,
     upper: Infinity,
     cuts: [],
@@ -563,6 +646,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     // Maximum de U dans la cellule : le meilleur des programmes (un par combo).
     let cellUpper = -Infinity;
     let chosen: Set<number> | null = null;
+    let chosenPoints: Partial<Record<StatKey, number>> = {};
     let failed = false;
     const programs = buildLps(cell);
     // 1. Relaxation continue de chaque combo : borne rapide, souvent suffisante.
@@ -635,15 +719,20 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
           counts.set(cands[i]!.family, (counts.get(cands[i]!.family) ?? 0) + 1),
         );
         const fits = [...counts].every(([family, n]) => n <= model.slotsOf(family));
+        const points = pointsFrom(columns);
         const valid =
           integral &&
           fits &&
-          model.feasible(slotsFromSolution(picked)) &&
-          model.objective(gearOf(picked)) > -Infinity;
-        return { picked, valid };
+          model.feasible(slotsFromSolution(picked), points) &&
+          model.objective(gearOf(picked), model.pointsVec(points)) > -Infinity;
+        return { picked, valid, points };
       };
       let solution: SolveResult;
-      let stuff: { picked: Set<number>; valid: boolean };
+      let stuff: {
+        picked: Set<number>;
+        valid: boolean;
+        points: Partial<Record<StatKey, number>>;
+      };
       try {
         // D'abord avec le seuil « au moins le meilleur stuff » : prouver qu'aucun
         // stuff ne le dépasse (Infeasible) est en général bien plus rapide.
@@ -692,14 +781,16 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       }
       const picked = stuff.picked;
       // Chaque stuff trouvé est évalué avec la vraie formule.
-      const value = model.objective(gearOf(picked));
+      const value = model.objective(gearOf(picked), model.pointsVec(stuff.points));
       if (value > bestDamage) {
         bestDamage = value;
         bestSlots = slotsFromSolution(picked);
+        bestPoints = stuff.points;
       }
       if (upper > bestDamage + eps || targetReached) {
         cellUpper = Math.max(upper, relaxBound);
         chosen = picked;
+        chosenPoints = stuff.points;
         break;
       }
     }
@@ -710,6 +801,8 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     }
     if (!chosen || cellUpper <= bestDamage + eps) return;
     const gear = gearOf(chosen);
+    const pts = model.pointsVec(chosenPoints);
+    for (let d = 0; d < D; d++) gear[d]! += pts[d]!;
 
     // Couper la cellule là où la borne est la plus lâche pour ce stuff.
     const total = (d: number) => Math.round(gear[d]! + baseVec[d]!);
@@ -733,17 +826,19 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         };
       }
     });
-    const crit = cut(Math.max(cell.critLo, 0), cell.critHi, total(CRIT), 4);
-    if (crit < cell.critHi) {
-      const gain = here - upperAt(gear, { ...cell, critHi: crit });
-      if (!bestSplit || gain > (bestSplit as { gain: number }).gain) {
-        bestSplit = {
-          gain,
-          apply: (lo, hi) => {
-            lo.critHi = crit;
-            hi.critLo = crit + 1;
-          },
-        };
+    if (withCrit) {
+      const crit = cut(Math.max(cell.critLo, 0), cell.critHi, total(CRIT), 4);
+      if (crit < cell.critHi) {
+        const gain = here - upperAt(gear, { ...cell, critHi: crit });
+        if (!bestSplit || gain > (bestSplit as { gain: number }).gain) {
+          bestSplit = {
+            gain,
+            apply: (lo, hi) => {
+              lo.critHi = crit;
+              hi.critLo = crit + 1;
+            },
+          };
+        }
       }
     }
     if (!bestSplit) {
@@ -789,6 +884,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
 
   return {
     slots: bestSlots,
+    points: bestPoints,
     damage: bestDamage,
     proven,
     upper: proven ? bestDamage : Math.max(upperLeft(), bestDamage),

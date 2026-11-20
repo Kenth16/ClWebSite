@@ -1,15 +1,26 @@
 import { randomUUID } from "node:crypto";
 import {
+  CHARACTERISTICS,
+  RESISTANCE_STATS,
+  allocatePoints,
+  availablePoints,
   buildDamageModel,
-  parseCriteria,
-  simplifyCriteria,
-  classElements,
   computeCharacter,
-  optimizeTurnDamage,
-  turnCombo,
+  computeSpellDamage,
+  damageProxyWeights,
+  elementCharacteristics,
+  optimizeStuff,
+  parseCriteria,
+  rotationDamage,
+  simplifyCriteria,
+  spellGradeAt,
+  type Characteristic,
   type DofusBreed,
   type OptimizeRequest,
   type SlotId,
+  type StatKey,
+  type StatWeights,
+  type TurnSpell,
 } from "@kenpai/shared";
 import { HttpError } from "../../lib/errors";
 import type { DofusClient } from "./client";
@@ -130,7 +141,7 @@ export class OptimizeJobs {
   }
 
   private async optimize(request: OptimizeRequest, progress: JobProgress) {
-    const { breedId, level, elements, ap, exos } = request;
+    const { breedId, level, ap, exos, critical, attack, scrolls, minimums } = request;
     const [breeds, classSpells, equipment, sets] = await Promise.all([
       this.spells.breeds(),
       this.spells.spells(breedId),
@@ -146,38 +157,101 @@ export class OptimizeJobs {
     const breed: DofusBreed | undefined = breeds.find((b) => b.id === breedId);
     if (!breed) throw new HttpError(404, "Classe inconnue.");
 
-    // 1. Recherche locale : un bon stuff en moins d'une seconde.
-    progress.phase = "search";
-    const local = optimizeTurnDamage({
-      level,
-      elements,
-      ap,
-      exos,
-      spells: classSpells,
-      items,
-      sets,
-    });
-    if (local.spells.length === 0) {
-      throw new HttpError(
-        422,
-        "Cette classe n'a aucun sort de dégâts dans ces éléments à ce niveau.",
-      );
+    // Sorts choisis : grade disponible au niveau, avec des dégâts.
+    const spells: TurnSpell[] = [];
+    for (const spell of classSpells) {
+      if (!request.spellIds.includes(spell.id)) continue;
+      const grade = spellGradeAt(spell, level);
+      if (grade && grade.lines.length > 0) spells.push({ spell, grade, limit: 1 });
     }
-    progress.damage = local.score;
-    await new Promise((resolve) => setImmediate(resolve));
+    if (spells.length === 0) {
+      throw new HttpError(422, "Aucun des sorts choisis ne fait de dégâts à ce niveau.");
+    }
+    const elements = [...new Set(spells.flatMap((s) => s.grade.lines.map((l) => l.element)))];
 
-    // La recherche rapide pénalise les conditions non remplies ; on vérifie quand même.
+    // Base hors équipement : PA/PM/PO de base et exos, parchemins. Les points de
+    // caractéristique, eux, sont répartis par l'optimiseur.
+    const base: StatWeights = {
+      ap: (level >= 100 ? 7 : 6) + (exos.ap ? 1 : 0),
+      mp: 3 + (exos.mp ? 1 : 0),
+      range: exos.range ? 1 : 0,
+    };
+    const scrollsBy = Object.fromEntries(CHARACTERISTICS.map((c) => [c, scrolls])) as Record<
+      Characteristic,
+      number
+    >;
+    for (const c of CHARACTERISTICS) base[c] = scrolls;
+    const pointsBudget = availablePoints(level);
+    // Exigences : PV = 50 + 5 × niveau + Vitalité ; PM ; PO ; % de résistance.
+    const mins: Partial<Record<StatKey, number>> = {};
+    if (minimums.hp) mins.vitality = minimums.hp - (50 + 5 * level);
+    if (minimums.mp) mins.mp = minimums.mp;
+    if (minimums.range) mins.range = minimums.range;
+    for (const [element, stat] of Object.entries(RESISTANCE_STATS)) {
+      const value = minimums.resistances[element as keyof typeof RESISTANCE_STATS];
+      if (value !== undefined) mins[stat] = value;
+    }
+
+    // 1. Recherche locale rapide : un premier stuff, avec une répartition simple des
+    //    points (éléments des sorts, et Vitalité si des PV sont exigés).
+    progress.phase = "search";
     const model = buildDamageModel({
       level,
       elements,
       ap,
-      base: local.base,
-      spells: local.spells,
+      base,
+      spells,
       items,
       sets,
+      mode: "rotation",
+      attack,
+      critical,
+      pointsBudget,
+      minimums: mins,
     });
-    const starts = [local.slots].filter((slots) => model.feasible(slots));
-    progress.damage = starts.length > 0 ? model.evaluateSlots(starts[0]!) : null;
+    const allocations: Partial<Record<StatKey, number>>[] = [];
+    const elementStats = elementCharacteristics(elements);
+    allocations.push(allocatePoints(level, elementStats));
+    if (mins.vitality && mins.vitality > 0) {
+      const vitality = Math.min(pointsBudget, mins.vitality);
+      const rest = allocatePoints(1 + Math.floor((pointsBudget - vitality) / 5), elementStats);
+      allocations.push({ ...rest, vitality });
+    }
+    let start: {
+      slots: Partial<Record<SlotId, number>>;
+      points: Partial<Record<StatKey, number>>;
+    } | null = null;
+    let startDamage = -Infinity;
+    for (const points of allocations) {
+      const withPoints: StatWeights = { ...base };
+      for (const [k, v] of Object.entries(points) as [StatKey, number][]) {
+        withPoints[k] = (withPoints[k] ?? 0) + v;
+      }
+      const local = optimizeStuff({
+        level,
+        weights: damageProxyWeights(elements),
+        base: withPoints,
+        items,
+        sets,
+        objective: (total) => {
+          // Exigences non remplies : très pénalisées, pour que la recherche s'en écarte.
+          let shortfall = 0;
+          for (const [stat, min] of Object.entries(mins) as [StatKey, number][]) {
+            shortfall += Math.max(0, min - total(stat));
+          }
+          shortfall += Math.max(0, ap - total("ap")) * 100;
+          return rotationDamage(total, spells, { attack, critical }) - shortfall * 10_000;
+        },
+      });
+      if (!model.feasible(local.slots, points)) continue;
+      const damage = model.evaluateSlots(local.slots, points);
+      if (damage > startDamage) {
+        startDamage = damage;
+        start = { slots: local.slots, points };
+      }
+    }
+    progress.damage = start ? startDamage : null;
+    await new Promise((resolve) => setImmediate(resolve));
 
     // 2. Preuve par programmation linéaire en nombres entiers (HiGHS), en parallèle.
     progress.phase = "proof";
@@ -185,11 +259,17 @@ export class OptimizeJobs {
       level,
       elements,
       ap,
-      base: local.base,
-      spells: local.spells,
+      base,
+      spells,
       items,
       sets,
-      initial: starts[0],
+      mode: "rotation",
+      attack,
+      critical,
+      pointsBudget,
+      minimums: mins,
+      initial: start?.slots,
+      initialPoints: start?.points,
       workers: defaultWorkers(),
       timeLimitMs: PROOF_TIME_LIMIT_MS,
       onProgress: (p) => {
@@ -199,32 +279,62 @@ export class OptimizeJobs {
         progress.solves = p.solves;
       },
     });
+    if (proof.damage === -Infinity) {
+      throw new HttpError(
+        422,
+        proof.proven
+          ? "Aucun stuff ne remplit toutes ces exigences : assouplissez-en une."
+          : "Aucun stuff remplissant ces exigences n'a été trouvé à temps.",
+      );
+    }
 
-    // Fiches complètes des objets retenus et combo exact (formule du jeu, arrondis compris).
+    // Fiches complètes des objets retenus, caractéristiques et dégâts par sort.
     const slots: Partial<Record<SlotId, number>> = proof.slots;
     const ids = Object.values(slots).filter((id): id is number => id !== undefined);
     const chosen = await Promise.all(ids.map((id) => this.client.item(id)));
     const setIds = new Set(chosen.map((i) => i.set?.id).filter((id): id is number => !!id));
     const usedSets = sets.filter((s) => setIds.has(s.id));
+    const points = Object.fromEntries(
+      CHARACTERISTICS.map((c) => [c, proof.points[c] ?? 0]),
+    ) as Record<Characteristic, number>;
     const character = computeCharacter({
       level,
-      base: local.points,
-      scrolls: local.scrolls,
+      base: points,
+      scrolls: scrollsBy,
       items: chosen,
       sets: usedSets,
       exos,
     });
+    const totals = { ...character.totals };
+    if (!critical) totals.critical = -1000;
+    const perSpell = spells.map((s) => {
+      const grade = { ...s.grade, range: attack === "melee" ? 1 : Math.max(2, s.grade.range) };
+      const damage = computeSpellDamage(totals, grade);
+      return {
+        spellId: s.spell.id,
+        name: s.spell.name,
+        icon: s.spell.icon,
+        apCost: s.grade.apCost,
+        average: damage.exactAverage,
+        lines: damage.lines,
+        criticalChance: critical ? damage.criticalChance : 0,
+      };
+    });
     return {
       breed,
       level,
-      elements,
       ap,
       exos,
-      classElements: classElements(classSpells, level),
-      points: local.points,
-      scrolls: local.scrolls,
+      critical,
+      attack,
+      scrolls,
+      minimums,
+      points,
       slots,
-      combo: turnCombo(character.totals, local.spells, ap),
+      damage: perSpell.reduce((sum, s) => sum + s.average, 0),
+      spells: perSpell,
+      hp: character.hp,
+      totals: character.totals,
       items: chosen,
       sets: usedSets,
       proof: {
@@ -235,7 +345,7 @@ export class OptimizeJobs {
         candidates: proof.candidates,
         considered: proof.considered,
         ms: proof.ms,
-        localDamage: local.score,
+        localDamage: startDamage,
       },
     };
   }
