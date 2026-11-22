@@ -14,7 +14,7 @@ export default async function StuffSimulatorPage({ searchParams }: Props) {
   const [user, params] = await Promise.all([getCurrentUser(), searchParams]);
   const stuff = Array.isArray(params.stuff) ? params.stuff[0] : params.stuff;
   return (
-    <PageContainer className="max-w-[90rem] space-y-6">
+    <PageContainer className="max-w-[120rem] space-y-6">
       <StuffSimulatorLoader loggedIn={user !== null} initialBuildId={stuff} />
       <p className="text-xs text-muted-foreground">
         Données du jeu fournies par l&apos;API communautaire DofusDude. Dofus est une marque

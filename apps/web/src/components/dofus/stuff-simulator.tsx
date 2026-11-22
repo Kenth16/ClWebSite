@@ -147,7 +147,7 @@ function loadStuff(): Stuff {
 
 // ─── Présentation des caractéristiques ─────────────────────────────────────
 
-const SUMMARY: StatKey[] = ["initiative", "critical", "summons", "heals", "prospecting"];
+const SUMMARY: StatKey[] = ["initiative", "critical", "summons", "prospecting"];
 /** Caractéristiques élémentaires : affichées avec la Puissance incluse. */
 const ELEMENTAL: StatKey[] = ["strength", "intelligence", "chance", "agility"];
 const SECONDARY: StatKey[] = [
@@ -158,6 +158,7 @@ const SECONDARY: StatKey[] = [
   "mpParry",
   "mpReduction",
   "pods",
+  "heals",
 ];
 /** Dommages fixes et élémentaires, puis les autres (critiques, poussée, %). */
 const DAMAGE_FIXED: StatKey[] = [
@@ -451,6 +452,14 @@ export function StuffSimulator({
       warnings.push(`${item.name} : conditions non remplies (${conditionsText(item.conditions)}).`);
     }
   }
+  // Une seule Prysmaradite par stuff : toutes celles équipées passent en rouge.
+  const prysmas = equipped.filter(({ item }) => /prysmaradite/i.test(item.type));
+  const prysmaConflict = new Set(prysmas.length > 1 ? prysmas.map((e) => e.slot.id) : []);
+  if (prysmas.length > 1) {
+    warnings.push(
+      `Une seule Prysmaradite par stuff : ${prysmas.map((e) => e.item.name).join(" et ")}.`,
+    );
+  }
   const seen = new Set<number>();
   for (const { slot, item } of equipped) {
     if ((slot.family === "dofus" || slot.family === "ring") && seen.has(item.id)) {
@@ -474,6 +483,7 @@ export function StuffSimulator({
     const loading = id !== undefined && !item;
     const tooLow = item ? item.level > level : false;
     const unmet = item ? !conditionsMet(item.conditions, { level, totals }) : false;
+    const conflict = prysmaConflict.has(slotId);
     const button = (
       <button
         key={slotId}
@@ -485,6 +495,7 @@ export function StuffSimulator({
           "group relative flex aspect-square w-full items-center justify-center rounded-lg border bg-background/50 transition-colors hover:border-gold/60 hover:bg-accent",
           item && "border-gold/40 bg-card",
           (tooLow || unmet) && "border-destructive/70",
+          conflict && "border-2 border-destructive bg-destructive/15",
         )}
       >
         {item ? (
@@ -535,6 +546,11 @@ export function StuffSimulator({
           )}
           {tooLow && (
             <p className="mt-1 text-xs text-destructive">Demande le niveau {item.level}.</p>
+          )}
+          {conflict && (
+            <p className="mt-1 text-xs text-destructive">
+              Une seule Prysmaradite par stuff : retirez-en une.
+            </p>
           )}
           <p className="mt-2 text-[0.7rem] text-muted-foreground">
             Cliquer pour changer ou retirer
@@ -678,332 +694,359 @@ export function StuffSimulator({
         </p>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)_18rem]">
-        {/* Colonne gauche : caractéristiques */}
-        <div className="order-2 space-y-4 xl:order-1">
-          <Panel title="Résumé" icon={ScrollText}>
-            <div className="mb-3 flex items-center gap-3 rounded-lg bg-el-life/10 px-3 py-2">
-              <Heart className="size-7 fill-el-life text-el-life" aria-hidden="true" />
-              <p className="leading-tight">
-                <span className="font-serif text-2xl font-bold tabular-nums">{result.hp}</span>
-                <span className="block text-xs text-muted-foreground">Points de vie</span>
-              </p>
-            </div>
-            <div className="mb-3 grid grid-cols-3 gap-2">
-              {EXO_STATS.map((k) => {
-                const exo = stuff.exos[k];
-                const atCap = !exo && totals[k] >= STAT_CAPS[k];
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => toggleExo(k)}
-                    disabled={atCap}
-                    aria-pressed={exo}
-                    title={
-                      exo
-                        ? `Retirer l'exo ${STATS[k]}`
-                        : atCap
-                          ? `Maximum atteint (${STAT_CAPS[k]} ${STATS[k]})`
-                          : `Ajouter un exo ${STATS[k]} (+1)`
-                    }
-                    className={cn(
-                      "relative flex flex-col items-center rounded-lg border py-2 transition-colors",
-                      exo
-                        ? "border-gold bg-gold-soft text-gold shadow-[inset_0_0_0_1px_var(--gold)]"
-                        : "bg-background/50 hover:border-gold/60 hover:bg-accent",
-                      atCap && "cursor-not-allowed opacity-70",
-                    )}
-                  >
-                    {exo && (
-                      <span className="absolute top-1 right-1.5 text-[0.6rem] font-bold">EXO</span>
-                    )}
-                    <StatIcon
-                      stat={k}
-                      className={cn("size-5", k !== "range" && "fill-current", exo && "text-gold")}
-                    />
-                    <span className="mt-0.5 font-serif text-xl font-bold tabular-nums">
-                      {totals[k]}
-                    </span>
-                    <span className={cn("text-xs", exo ? "text-gold" : "text-muted-foreground")}>
-                      {STATS[k]}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            <StatGrid keys={SUMMARY} totals={totals} />
-          </Panel>
-
-          <Panel title="Caractéristiques" icon={Dumbbell}>
-            <p
-              className={cn(
-                "mb-3 text-sm",
-                result.pointsLeft < 0 ? "text-destructive" : "text-muted-foreground",
-              )}
-            >
-              Points restants :{" "}
-              <strong className={result.pointsLeft >= 0 ? "text-primary" : undefined}>
-                {result.pointsLeft}
-              </strong>
-            </p>
-            <table className="w-full table-fixed text-[0.82rem]">
-              <thead>
-                <tr className="text-xs text-muted-foreground">
-                  <th className="w-10 pb-1 text-left font-normal">Total</th>
-                  <th className="pb-1 text-left font-normal" />
-                  <th className="w-[3.75rem] pb-1 text-left font-normal">Base</th>
-                  <th className="w-14 pb-1 text-left font-normal">Parcho</th>
-                </tr>
-              </thead>
-              <tbody>
-                {CHARACTERISTICS.map((c) => (
-                  <tr key={c}>
-                    <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone(c))}>
-                      {ELEMENTAL.includes(c) ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span
-                              tabIndex={0}
-                              className="cursor-help border-b border-dotted border-current outline-none"
-                            >
-                              {totals[c] + totals.power}
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="right" className="text-xs">
-                            {totals[c]} {STATS[c]} + {totals.power} {STATS.power} ={" "}
-                            <strong>{totals[c] + totals.power}</strong>
-                          </TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        totals[c]
+      {/*
+        Trois colonnes, puis quatre quand la zone est assez large : les effets
+        spéciaux et la forgemagie passent alors à droite des dommages.
+        Largeur mesurée sur la zone elle-même (requête de conteneur).
+      */}
+      <div className="@container">
+        <div className="grid gap-4 @min-[64rem]:grid-cols-[18rem_minmax(0,1fr)_18rem] @min-[92rem]:grid-cols-[18rem_minmax(0,1fr)_37rem]">
+          {/* Colonne gauche : caractéristiques */}
+          <div className="order-2 space-y-4 @min-[64rem]:order-1">
+            <Panel title="Résumé" icon={ScrollText}>
+              <div className="mb-3 flex items-center gap-3 rounded-lg bg-el-life/10 px-3 py-2">
+                <Heart className="size-7 fill-el-life text-el-life" aria-hidden="true" />
+                <p className="leading-tight">
+                  <span className="font-serif text-2xl font-bold tabular-nums">{result.hp}</span>
+                  <span className="block text-xs text-muted-foreground">Points de vie</span>
+                </p>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                {EXO_STATS.map((k) => {
+                  const exo = stuff.exos[k];
+                  const atCap = !exo && totals[k] >= STAT_CAPS[k];
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => toggleExo(k)}
+                      disabled={atCap}
+                      aria-pressed={exo}
+                      title={
+                        exo
+                          ? `Retirer l'exo ${STATS[k]}`
+                          : atCap
+                            ? `Maximum atteint (${STAT_CAPS[k]} ${STATS[k]})`
+                            : `Ajouter un exo ${STATS[k]} (+1)`
+                      }
+                      className={cn(
+                        "relative flex flex-col items-center rounded-lg border py-2 transition-colors",
+                        exo
+                          ? "border-gold bg-gold-soft text-gold shadow-[inset_0_0_0_1px_var(--gold)]"
+                          : "bg-background/50 hover:border-gold/60 hover:bg-accent",
+                        atCap && "cursor-not-allowed opacity-70",
                       )}
+                    >
+                      {exo && (
+                        <span className="absolute top-1 right-1.5 text-[0.6rem] font-bold">
+                          EXO
+                        </span>
+                      )}
+                      <StatIcon
+                        stat={k}
+                        className={cn(
+                          "size-5",
+                          k !== "range" && "fill-current",
+                          exo && "text-gold",
+                        )}
+                      />
+                      <span className="mt-0.5 font-serif text-xl font-bold tabular-nums">
+                        {totals[k]}
+                      </span>
+                      <span className={cn("text-xs", exo ? "text-gold" : "text-muted-foreground")}>
+                        {STATS[k]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <StatGrid keys={SUMMARY} totals={totals} />
+            </Panel>
+
+            <Panel title="Caractéristiques" icon={Dumbbell}>
+              <p
+                className={cn(
+                  "mb-3 text-sm",
+                  result.pointsLeft < 0 ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                Points restants :{" "}
+                <strong className={result.pointsLeft >= 0 ? "text-primary" : undefined}>
+                  {result.pointsLeft}
+                </strong>
+              </p>
+              <table className="w-full table-fixed text-[0.82rem]">
+                <thead>
+                  <tr className="text-xs text-muted-foreground">
+                    <th className="w-10 pb-1 text-left font-normal">Total</th>
+                    <th className="pb-1 text-left font-normal" />
+                    <th className="w-[3.75rem] pb-1 text-left font-normal">Base</th>
+                    <th className="w-14 pb-1 text-left font-normal">Parcho</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {CHARACTERISTICS.map((c) => (
+                    <tr key={c}>
+                      <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone(c))}>
+                        {ELEMENTAL.includes(c) ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                tabIndex={0}
+                                className="cursor-help border-b border-dotted border-current outline-none"
+                              >
+                                {totals[c] + totals.power}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="text-xs">
+                              {totals[c]} {STATS[c]} + {totals.power} {STATS.power} ={" "}
+                              <strong>{totals[c] + totals.power}</strong>
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          totals[c]
+                        )}
+                      </td>
+                      <td className="py-0.5 pr-1">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <StatIcon stat={c} />
+                          <span className="truncate">{STATS[c]}</span>
+                        </span>
+                      </td>
+                      <td className="py-0.5 pr-1">
+                        <NumberCell
+                          label={`${STATS[c]} : points de base`}
+                          value={stuff.base[c]}
+                          max={995}
+                          onChange={(n) => update({ base: { ...stuff.base, [c]: n } })}
+                        />
+                      </td>
+                      <td className="py-0.5">
+                        <NumberCell
+                          label={`${STATS[c]} : parchemins`}
+                          value={stuff.scrolls[c]}
+                          max={SCROLL_MAX}
+                          onChange={(n) => update({ scrolls: { ...stuff.scrolls, [c]: n } })}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone("power"))}>
+                      {totals.power}
                     </td>
-                    <td className="py-0.5 pr-1">
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <StatIcon stat={c} />
-                        <span className="truncate">{STATS[c]}</span>
+                    <td className="py-0.5" colSpan={2}>
+                      <span className="flex items-center gap-1.5">
+                        <StatIcon stat="power" />
+                        {STATS.power}
                       </span>
                     </td>
-                    <td className="py-0.5 pr-1">
-                      <NumberCell
-                        label={`${STATS[c]} : points de base`}
-                        value={stuff.base[c]}
-                        max={995}
-                        onChange={(n) => update({ base: { ...stuff.base, [c]: n } })}
-                      />
-                    </td>
                     <td className="py-0.5">
-                      <NumberCell
-                        label={`${STATS[c]} : parchemins`}
-                        value={stuff.scrolls[c]}
-                        max={SCROLL_MAX}
-                        onChange={(n) => update({ scrolls: { ...stuff.scrolls, [c]: n } })}
-                      />
+                      <div
+                        className="flex w-14 gap-1"
+                        role="group"
+                        aria-label="Tous les parchemins"
+                      >
+                        {[0, SCROLL_MAX].map((value) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() =>
+                              update({
+                                scrolls: Object.fromEntries(
+                                  CHARACTERISTICS.map((c) => [c, value]),
+                                ) as Stuff["scrolls"],
+                              })
+                            }
+                            title={`Mettre tous les parchemins à ${value}`}
+                            className="h-7 flex-1 rounded-md border border-input bg-background/60 text-[0.65rem] font-semibold tabular-nums transition-colors hover:bg-accent"
+                          >
+                            {value}
+                          </button>
+                        ))}
+                      </div>
                     </td>
                   </tr>
-                ))}
-                <tr>
-                  <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone("power"))}>
-                    {totals.power}
-                  </td>
-                  <td className="py-0.5" colSpan={2}>
-                    <span className="flex items-center gap-1.5">
-                      <StatIcon stat="power" />
-                      {STATS.power}
-                    </span>
-                  </td>
-                  <td className="py-0.5">
-                    <div className="flex w-14 gap-1" role="group" aria-label="Tous les parchemins">
-                      {[0, SCROLL_MAX].map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() =>
-                            update({
-                              scrolls: Object.fromEntries(
-                                CHARACTERISTICS.map((c) => [c, value]),
-                              ) as Stuff["scrolls"],
-                            })
-                          }
-                          title={`Mettre tous les parchemins à ${value}`}
-                          className="h-7 flex-1 rounded-md border border-input bg-background/60 text-[0.65rem] font-semibold tabular-nums transition-colors hover:bg-accent"
-                        >
-                          {value}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Coût : 1 point jusqu&apos;à 100, puis 2, 3 et 4 au-delà de 300 · Vitalité 1 · Sagesse
-              3.
-            </p>
-          </Panel>
+                </tbody>
+              </table>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Coût : 1 point jusqu&apos;à 100, puis 2, 3 et 4 au-delà de 300 · Vitalité 1 ·
+                Sagesse 3.
+              </p>
+            </Panel>
 
-          <Panel title="Secondaires" icon={Sparkles}>
-            <StatGrid keys={SECONDARY} totals={totals} />
-          </Panel>
-        </div>
+            <Panel title="Secondaires" icon={Sparkles}>
+              <StatGrid keys={SECONDARY} totals={totals} />
+            </Panel>
+          </div>
 
-        {/* Centre : équipement */}
-        <div className="order-1 space-y-4 xl:order-2">
-          <section aria-label="Équipement" className="frame-gilded bg-sky rounded-2xl border p-4">
-            {/* Grille de 6 colonnes égales : tous les emplacements ont la même taille. */}
-            <div className="grid grid-cols-6 gap-2.5">
-              <div className="grid content-start gap-2.5">
-                {(["amulet", "shield", "ring1", "belt", "boots"] as const).map((id) =>
-                  renderSlot(id, "right"),
-                )}
-              </div>
-              {/* La hauteur est donnée par les emplacements : le contenu défile si besoin. */}
-              <div className="relative col-span-4 min-h-0 rounded-xl border border-dashed border-gold/30 bg-card/40 text-sm">
-                <div className="absolute inset-0 flex flex-col gap-2 overflow-y-auto p-3">
-                  <p className="font-display truncate text-center text-base tracking-wide">
-                    {stuff.name || "Sans nom"}
-                  </p>
-                  <CharacterImage
-                    image={stuff.image}
-                    onChange={(image) => update({ image })}
-                    className="my-1"
-                  />
-                  <p className="text-center text-muted-foreground">
-                    Niveau {level} · {equipped.length} / {SLOTS.length} objets
-                  </p>
-                  <div className="mx-auto w-full max-w-60">
-                    <DamageCalculator
-                      totals={totals}
-                      level={level}
-                      breedId={stuff.breedId}
-                      onBreedChange={(breedId) => update({ breedId })}
-                      elementTags={stuff.tags.elements}
-                    />
-                    <div className="mt-1.5">
-                      <SetPicker
-                        level={level}
-                        equippedIds={equippedIds}
-                        onEquip={(set, picked) => {
-                          setItems((m) => ({
-                            ...m,
-                            ...Object.fromEntries(picked.map((i) => [i.id, i])),
-                          }));
-                          setSets((m) => ({ ...m, [set.id]: set }));
-                          setStuff((s) => ({ ...s, slots: placeItems(s.slots, picked) }));
-                        }}
-                      />
-                    </div>
-                  </div>
-                  {activeGroups.length > 0 && (
-                    <ul className="mt-1 grid gap-1.5">
-                      {activeGroups.map(({ set, items: setItems }) => (
-                        <li
-                          key={set.id}
-                          className="flex min-w-0 items-center gap-2.5 rounded-lg border border-gold/40 bg-gold-soft py-1.5 pr-2 pl-3"
-                        >
-                          <div className="flex shrink-0 -space-x-2">
-                            {setItems.map((item) => (
-                              <span
-                                key={item.id}
-                                title={item.name}
-                                className="flex size-8 items-center justify-center rounded-full border border-gold/40 bg-card"
-                              >
-                                <ItemIcon item={item} className="size-6" />
-                              </span>
-                            ))}
-                          </div>
-                          <div className="min-w-0 leading-tight">
-                            <p className="truncate font-medium">{set.name}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {setItems.length} / {set.itemIds.length} objets équipés
-                            </p>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {setGroups.length > activeGroups.length && (
-                    <p className="text-center text-xs text-muted-foreground">
-                      {setGroups.length - activeGroups.length === 1
-                        ? "1 panoplie incomplète"
-                        : `${setGroups.length - activeGroups.length} panoplies incomplètes`}{" "}
-                      · détail plus bas
-                    </p>
-                  )}
-                  {warnings.length > 0 && (
-                    <ul className="mt-1 grid gap-1 text-xs text-destructive">
-                      {warnings.map((w, i) => (
-                        <li key={i} className="flex gap-1.5">
-                          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                          {w}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {equipped.length === 0 && (
-                    <p className="m-auto text-center text-muted-foreground">
-                      Cliquez sur un emplacement pour choisir un objet.
-                    </p>
+          {/* Centre : équipement */}
+          <div className="order-1 space-y-4 @min-[64rem]:order-2">
+            <section
+              aria-label="Équipement"
+              className="frame-gilded bg-sky mx-auto w-full rounded-2xl border p-4 @min-[64rem]:max-w-[80%]"
+            >
+              {/* Grille de 6 colonnes égales : tous les emplacements ont la même taille. */}
+              <div className="grid grid-cols-6 gap-2.5">
+                <div className="grid content-start gap-2.5">
+                  {(["amulet", "shield", "ring1", "belt", "boots"] as const).map((id) =>
+                    renderSlot(id, "right"),
                   )}
                 </div>
-              </div>
-              <div className="grid content-start gap-2.5">
-                {(["hat", "weapon", "ring2", "cloak", "pet"] as const).map((id) =>
-                  renderSlot(id, "left"),
+                {/* La hauteur est donnée par les emplacements : le contenu défile si besoin. */}
+                <div className="relative col-span-4 min-h-0 rounded-xl border border-dashed border-gold/30 bg-card/40 text-sm">
+                  <div className="absolute inset-0 flex flex-col gap-2 overflow-y-auto p-3">
+                    <p className="font-display truncate text-center text-base tracking-wide">
+                      {stuff.name || "Sans nom"}
+                    </p>
+                    <CharacterImage
+                      image={stuff.image}
+                      onChange={(image) => update({ image })}
+                      className="my-1"
+                    />
+                    <p className="text-center text-muted-foreground">
+                      Niveau {level} · {equipped.length} / {SLOTS.length} objets
+                    </p>
+                    <div className="mx-auto w-full max-w-60">
+                      <DamageCalculator
+                        totals={totals}
+                        level={level}
+                        breedId={stuff.breedId}
+                        onBreedChange={(breedId) => update({ breedId })}
+                        elementTags={stuff.tags.elements}
+                      />
+                      <div className="mt-1.5">
+                        <SetPicker
+                          level={level}
+                          equippedIds={equippedIds}
+                          onEquip={(set, picked) => {
+                            setItems((m) => ({
+                              ...m,
+                              ...Object.fromEntries(picked.map((i) => [i.id, i])),
+                            }));
+                            setSets((m) => ({ ...m, [set.id]: set }));
+                            setStuff((s) => ({ ...s, slots: placeItems(s.slots, picked) }));
+                          }}
+                        />
+                      </div>
+                    </div>
+                    {activeGroups.length > 0 && (
+                      <ul className="mt-1 grid gap-1.5">
+                        {activeGroups.map(({ set, items: setItems }) => (
+                          <li
+                            key={set.id}
+                            className="flex min-w-0 items-center gap-2.5 rounded-lg border border-gold/40 bg-gold-soft py-1.5 pr-2 pl-3"
+                          >
+                            <div className="flex shrink-0 -space-x-2">
+                              {setItems.map((item) => (
+                                <span
+                                  key={item.id}
+                                  title={item.name}
+                                  className="flex size-8 items-center justify-center rounded-full border border-gold/40 bg-card"
+                                >
+                                  <ItemIcon item={item} className="size-6" />
+                                </span>
+                              ))}
+                            </div>
+                            <div className="min-w-0 leading-tight">
+                              <p className="truncate font-medium">{set.name}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {setItems.length} / {set.itemIds.length} objets équipés
+                              </p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {setGroups.length > activeGroups.length && (
+                      <p className="text-center text-xs text-muted-foreground">
+                        {setGroups.length - activeGroups.length === 1
+                          ? "1 panoplie incomplète"
+                          : `${setGroups.length - activeGroups.length} panoplies incomplètes`}{" "}
+                        · détail plus bas
+                      </p>
+                    )}
+                    {warnings.length > 0 && (
+                      <ul className="mt-1 grid gap-1 text-xs text-destructive">
+                        {warnings.map((w, i) => (
+                          <li key={i} className="flex gap-1.5">
+                            <AlertTriangle
+                              className="mt-0.5 size-3.5 shrink-0"
+                              aria-hidden="true"
+                            />
+                            {w}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {equipped.length === 0 && (
+                      <p className="m-auto text-center text-muted-foreground">
+                        Cliquez sur un emplacement pour choisir un objet.
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="grid content-start gap-2.5">
+                  {(["hat", "weapon", "ring2", "cloak", "pet"] as const).map((id) =>
+                    renderSlot(id, "left"),
+                  )}
+                </div>
+                {(["dofus1", "dofus2", "dofus3", "dofus4", "dofus5", "dofus6"] as const).map((id) =>
+                  renderSlot(id, "top"),
                 )}
               </div>
-              {(["dofus1", "dofus2", "dofus3", "dofus4", "dofus5", "dofus6"] as const).map((id) =>
-                renderSlot(id, "top"),
-              )}
-            </div>
-          </section>
+            </section>
 
-          <Panel title="Notes" icon={NotebookPen}>
-            <textarea
-              value={stuff.notes}
-              maxLength={NOTES_MAX}
-              rows={3}
-              onChange={(e) => update({ notes: e.target.value })}
-              placeholder="Quelques notes ou informations sur ce stuff…"
-              aria-label="Notes sur le stuff"
-              className="w-full rounded-md border border-input bg-background/60 px-3 py-2 text-base outline-none placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25"
-            />
-            <p className="text-right text-xs text-muted-foreground">
-              {stuff.notes.length} / {NOTES_MAX}
-            </p>
-          </Panel>
-        </div>
-
-        {/* Colonne droite : dommages et résistances */}
-        <div className="order-3 space-y-4">
-          {specialEntries.length > 0 && (
-            <Panel title="Effets spéciaux" icon={Gem}>
-              <SpecialEffectsPanel
-                entries={specialEntries}
-                choices={stuff.specials}
-                onEdit={setAsking}
+            <Panel title="Notes" icon={NotebookPen}>
+              <textarea
+                value={stuff.notes}
+                maxLength={NOTES_MAX}
+                rows={3}
+                onChange={(e) => update({ notes: e.target.value })}
+                placeholder="Quelques notes ou informations sur ce stuff…"
+                aria-label="Notes sur le stuff"
+                className="w-full rounded-md border border-input bg-background/60 px-3 py-2 text-base outline-none placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25"
               />
+              <p className="text-right text-xs text-muted-foreground">
+                {stuff.notes.length} / {NOTES_MAX}
+              </p>
             </Panel>
-          )}
-          <Panel title="Dommages" icon={Swords}>
-            <StatGrid keys={DAMAGE_FIXED} totals={totals} />
-            <hr className="my-2 border-border" />
-            <StatGrid keys={DAMAGE_OTHER} totals={totals} />
-          </Panel>
-          <Panel title="Résistances" icon={Shield}>
-            <StatGrid keys={RESISTANCE_FIXED} totals={totals} />
-            <hr className="my-2 border-border" />
-            <StatGrid keys={RESISTANCE_PCT} totals={totals} />
-          </Panel>
-          <Panel title="Forgemagie" icon={Hammer}>
-            <Forgemagic
-              exos={stuff.exos}
-              onToggleExo={toggleExo}
-              lines={stuff.forgemagic}
-              onLinesChange={(forgemagic) => update({ forgemagic })}
-            />
-          </Panel>
+          </div>
+
+          {/* Colonnes droites : dommages et résistances, puis effets spéciaux et forgemagie */}
+          <div className="order-3 grid content-start items-start gap-4 @min-[92rem]:grid-cols-2">
+            <div className="space-y-4">
+              <Panel title="Dommages" icon={Swords}>
+                <StatGrid keys={DAMAGE_FIXED} totals={totals} />
+                <hr className="my-2 border-border" />
+                <StatGrid keys={DAMAGE_OTHER} totals={totals} />
+              </Panel>
+              <Panel title="Résistances" icon={Shield}>
+                <StatGrid keys={RESISTANCE_FIXED} totals={totals} />
+                <hr className="my-2 border-border" />
+                <StatGrid keys={RESISTANCE_PCT} totals={totals} />
+              </Panel>
+            </div>
+            <div className="space-y-4">
+              {specialEntries.length > 0 && (
+                <Panel title="Effets spéciaux" icon={Gem}>
+                  <SpecialEffectsPanel
+                    entries={specialEntries}
+                    choices={stuff.specials}
+                    onEdit={setAsking}
+                  />
+                </Panel>
+              )}
+              <Panel title="Forgemagie" icon={Hammer}>
+                <Forgemagic
+                  exos={stuff.exos}
+                  onToggleExo={toggleExo}
+                  lines={stuff.forgemagic}
+                  onLinesChange={(forgemagic) => update({ forgemagic })}
+                />
+              </Panel>
+            </div>
+          </div>
         </div>
       </div>
 
