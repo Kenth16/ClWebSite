@@ -1,14 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { Calculator, Crosshair, Hand, Loader2, Star } from "lucide-react";
+import { Calculator, Crosshair, Hand, Loader2, Star, Swords } from "lucide-react";
 import {
+  BUILD_ELEMENT_TAGS,
   ELEMENTS,
   STATS,
   computeSpellDamage,
   spellGradeAt,
   spellMatchesElements,
+  topCombos,
+  turnSpells,
   type BuildElementTag,
+  type DofusElement,
   type DofusSpell,
   type StatKey,
   type StatTotals,
@@ -39,6 +43,10 @@ const KEY_STATS: StatKey[] = [
   "meleeDamagePct",
   "rangedDamagePct",
 ];
+
+/** Filtre du calcul : sans « Multi » (aucun élément coché = tous les éléments). */
+const FILTER_TAGS = BUILD_ELEMENT_TAGS.filter((t) => t !== "multi");
+const ALL_ELEMENTS = Object.keys(ELEMENTS) as DofusElement[];
 
 const fmtRange = (r: { min: number; max: number }) =>
   r.min === r.max ? String(r.min) : `${r.min} – ${r.max}`;
@@ -171,6 +179,7 @@ export function DamageCalculator({
   const [spells, setSpells] = React.useState<Record<number, DofusSpell[]>>({});
   const [error, setError] = React.useState<string | null>(null);
   const [onlyDamage, setOnlyDamage] = React.useState(true);
+  const [showTurns, setShowTurns] = React.useState(false);
 
   React.useEffect(() => {
     if (!open || breedId === null || spells[breedId]) return;
@@ -186,13 +195,19 @@ export function DamageCalculator({
       spellMatchesElements(s, elements),
   );
   const breed = breeds?.find((b) => b.id === breedId);
+  const ap = Math.max(0, totals.ap);
+  const turns = React.useMemo(
+    () =>
+      showTurns && shown ? topCombos(totals, turnSpells(shown, level, ALL_ELEMENTS, ap), ap, 4) : null,
+    [showTurns, shown, totals, level, ap],
+  );
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         // À l'ouverture, le filtre reprend les éléments choisis pour le stuff.
-        if (next) setElements(elementTags);
+        if (next) setElements(elementTags.filter((t) => t !== "multi"));
         setOpen(next);
       }}
     >
@@ -263,8 +278,68 @@ export function DamageCalculator({
         {/* Filtre par élément */}
         <fieldset>
           <legend className="mb-2 text-sm font-medium">Éléments</legend>
-          <ElementTagPicker value={elements} onChange={setElements} />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <ElementTagPicker value={elements} onChange={setElements} tags={FILTER_TAGS} />
+            <Button
+              variant={showTurns ? "default" : "outline"}
+              size="sm"
+              aria-pressed={showTurns}
+              disabled={breedId === null}
+              onClick={() => setShowTurns((v) => !v)}
+            >
+              <Swords aria-hidden="true" />
+              Meilleurs tours
+            </Button>
+          </div>
         </fieldset>
+
+        {showTurns && breedId !== null && (
+          <section aria-label="Meilleurs tours" className="rounded-lg border bg-card/50 p-3">
+            <p className="mb-2 text-xs text-muted-foreground">
+              Les 4 combinaisons de sorts qui font le plus de dégâts en un tour avec les {ap} PA du
+              stuff (moyenne critiques compris, sorts du filtre, limites de lancers respectées).
+            </p>
+            {!turns ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                Chargement des sorts…
+              </p>
+            ) : turns.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Aucun sort de dégâts ne tient dans {ap} PA.
+              </p>
+            ) : (
+              <ol className="grid gap-2 md:grid-cols-2">
+                {turns.map((turn, i) => (
+                  <li key={i} className="flex items-center gap-3 rounded-md border bg-background/60 p-2">
+                    <span className="w-5 shrink-0 text-center font-serif text-sm font-bold text-muted-foreground">
+                      {i + 1}
+                    </span>
+                    <ul className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+                      {turn.casts.map((c) => (
+                        <li
+                          key={c.spellId}
+                          title={`${c.name} : ${c.casts} × ${c.perCast} (${c.apCost} PA)`}
+                          className="flex items-center gap-1 rounded-full border bg-card/70 py-0.5 pl-0.5 pr-2 text-xs"
+                        >
+                          <RemoteIcon src={c.icon} className="size-6" />
+                          <span className="max-w-28 truncate">{c.name}</span>
+                          {c.casts > 1 && <span className="font-semibold">× {c.casts}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="shrink-0 text-right leading-none">
+                      <span className="font-serif text-lg font-bold tabular-nums">{turn.damage}</span>
+                      <span className="block text-[0.65rem] text-muted-foreground">
+                        {turn.apUsed}/{ap} PA
+                      </span>
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        )}
 
         <div className="-mx-2 max-h-[55svh] min-h-40 overflow-y-auto px-2">
           {breedId === null ? (

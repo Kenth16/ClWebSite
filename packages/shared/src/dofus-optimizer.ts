@@ -275,6 +275,79 @@ export function turnCombo(totals: StatTotals, spells: readonly TurnSpell[], ap: 
 }
 
 /**
+ * Les `count` meilleures combinaisons de sorts pour `ap` PA (critiques compris).
+ * Sac à dos « k meilleurs » : chaque combinaison est distincte ; celles qu'on
+ * pourrait encore compléter d'un sort (sous-ensemble d'une autre) sont écartées.
+ */
+export function topCombos(
+  totals: StatTotals,
+  spells: readonly TurnSpell[],
+  ap: number,
+  count = 4,
+): TurnCombo[] {
+  const keep = count * 12;
+  const groups = new Map<number, TurnSpell[]>();
+  for (const s of spells) groups.set(s.spell.variant, [...(groups.get(s.spell.variant) ?? []), s]);
+  const exact = new Map<TurnSpell, number>();
+  for (const s of spells) exact.set(s, computeSpellDamage(totals, s.grade).exactAverage);
+
+  type Entry = { damage: number; picks: { spell: TurnSpell; casts: number }[] };
+  // dp[a] : meilleures combinaisons coûtant exactement a PA.
+  let dp: Entry[][] = Array.from({ length: ap + 1 }, (_, a) =>
+    a === 0 ? [{ damage: 0, picks: [] }] : [],
+  );
+  for (const options of groups.values()) {
+    const next = dp.map((cell) => [...cell]);
+    for (const s of options) {
+      const value = exact.get(s)!;
+      if (value <= 0) continue;
+      for (let n = 1; n <= s.limit; n++) {
+        const cost = n * s.grade.apCost;
+        for (let a = cost; a <= ap; a++) {
+          for (const e of dp[a - cost]!) {
+            next[a]!.push({ damage: e.damage + n * value, picks: [...e.picks, { spell: s, casts: n }] });
+          }
+        }
+      }
+    }
+    dp = next.map((cell) => cell.sort((x, y) => y.damage - x.damage).slice(0, keep));
+  }
+
+  const all = dp
+    .flat()
+    .filter((e) => e.picks.length > 0)
+    .sort((x, y) => y.damage - x.damage);
+  const castsOf = (e: Entry) => new Map(e.picks.map((p) => [p.spell, p.casts]));
+  const contains = (big: Entry, small: Entry) => {
+    const b = castsOf(big);
+    return small.picks.every((p) => (b.get(p.spell) ?? 0) >= p.casts);
+  };
+  const chosen: Entry[] = [];
+  for (const e of all) {
+    if (chosen.length >= count) break;
+    if (all.some((o) => o !== e && o.picks.length >= e.picks.length && contains(o, e) && o.damage > e.damage)) continue;
+    chosen.push(e);
+  }
+  return chosen.map((e) => {
+    const casts = e.picks
+      .map(({ spell, casts }) => ({
+        spellId: spell.spell.id,
+        name: spell.spell.name,
+        icon: spell.spell.icon,
+        casts,
+        apCost: spell.grade.apCost,
+        perCast: computeSpellDamage(totals, spell.grade).average,
+      }))
+      .sort((a, b) => b.perCast * b.casts - a.perCast * a.casts);
+    return {
+      damage: Math.floor(e.damage),
+      apUsed: casts.reduce((sum, c) => sum + c.casts * c.apCost, 0),
+      casts,
+    };
+  });
+}
+
+/**
  * Version rapide des dégâts moyens d'un lancer (sans les arrondis du jeu),
  * utilisée pendant la recherche où des milliers de stuffs sont comparés.
  */

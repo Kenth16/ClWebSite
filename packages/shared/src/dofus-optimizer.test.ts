@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DofusItem, DofusSet, DofusSpell, StatKey } from "./dofus";
+import { STATS, type DofusItem, type DofusSet, type DofusSpell, type StatKey, type StatTotals } from "./dofus";
 import {
   allocatePoints,
   bestCombo,
@@ -7,6 +7,7 @@ import {
   isAllowedItem,
   optimizeStuff,
   optimizeTurnDamage,
+  topCombos,
   turnSpells,
 } from "./dofus-optimizer";
 
@@ -233,5 +234,51 @@ describe("dégâts d'un tour", () => {
   it("donne la part des éléments des sorts de la classe", () => {
     const shares = classElements([spell(1, "fire", 90, 3), spell(2, "air", 10, 3)], 50);
     expect(shares[0]).toEqual({ element: "fire", share: 0.9 });
+  });
+});
+
+describe("meilleurs tours", () => {
+  it("rend les 4 meilleures combinaisons distinctes, sans combinaison complétable", () => {
+    const totals = Object.fromEntries(Object.keys(STATS).map((k) => [k, 0])) as StatTotals;
+    const spells = turnSpells(
+      [
+        spell(1, "fire", 30, 4, { maxCasts: 2 }),
+        spell(2, "fire", 20, 3),
+        spell(3, "fire", 100, 6, { variant: 2, maxCasts: 1 }),
+        spell(5, "fire", 9, 2, { maxCasts: 1 }),
+      ],
+      200,
+      ["fire"],
+      11,
+    );
+    const top = topCombos(totals, spells, 11);
+    expect(top).toHaveLength(4);
+    // Exhaustif : toutes les combinaisons maximales (aucun sort ne rentre en plus).
+    const options = [
+      [0, 1, 2].map((n) => ({ s: 1, n, ap: 4 * n, dmg: 30 * n })),
+      [
+        { s: 2, n: 0, ap: 0, dmg: 0 },
+        ...[1, 2, 3].map((n) => ({ s: 2, n, ap: 3 * n, dmg: 20 * n })),
+        { s: 3, n: 1, ap: 6, dmg: 100 },
+      ],
+      [0, 1].map((n) => ({ s: 5, n, ap: 2 * n, dmg: 9 * n })),
+    ];
+    const combos: number[] = [];
+    for (const a of options[0]!)
+      for (const b of options[1]!)
+        for (const c of options[2]!) {
+          const ap = a.ap + b.ap + c.ap;
+          if (ap > 11 || ap === 0) continue;
+          const left = 11 - ap;
+          const canAdd =
+            (a.n < 2 && left >= 4) ||
+            (b.s === 2 && b.n < 3 && left >= 3) ||
+            (b.n === 0 && left >= 3) ||
+            (c.n < 1 && left >= 2);
+          if (!canAdd) combos.push(a.dmg + b.dmg + c.dmg);
+        }
+    combos.sort((x, y) => y - x);
+    expect(top.map((t) => t.damage)).toEqual(combos.slice(0, 4));
+    expect(top[0]!.apUsed).toBeLessThanOrEqual(11);
   });
 });

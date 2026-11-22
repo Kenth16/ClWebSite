@@ -102,14 +102,17 @@ export function ElementTagPicker({
   value,
   onChange,
   className,
+  tags = BUILD_ELEMENT_TAGS,
 }: {
   value: readonly BuildElementTag[];
   onChange: (value: BuildElementTag[]) => void;
   className?: string;
+  /** Tags proposés (par défaut tous, « Multi » compris). */
+  tags?: readonly BuildElementTag[];
 }) {
   return (
     <div className={cn("flex flex-wrap gap-1.5", className)}>
-      {BUILD_ELEMENT_TAGS.map((tag) => {
+      {tags.map((tag) => {
         const on = value.includes(tag);
         return (
           <button
