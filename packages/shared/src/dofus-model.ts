@@ -467,11 +467,36 @@ export function buildDamageModel(input: DamageModelInput) {
     return true;
   };
 
+  // Entonnoir (explication et débogage) : pourquoi les objets sont écartés.
+  const funnel = {
+    total: input.items.length,
+    noSlot: 0,
+    tooHigh: 0,
+    forbidden: 0,
+    unwearable: 0,
+    byFamily: {} as Partial<Record<SlotFamily, { considered: number; kept: number }>>,
+  };
   for (const item of input.items) {
-    if (!item.family || item.level > input.level || !isAllowedItem(item)) continue;
+    if (!item.family) {
+      funnel.noSlot++;
+      continue;
+    }
+    if (item.level > input.level) {
+      funnel.tooHigh++;
+      continue;
+    }
+    if (!isAllowedItem(item)) {
+      funnel.forbidden++;
+      continue;
+    }
     const criteria = criteriaOf(item);
-    if (criteria?.kind === "false") continue; // jamais portable (autre classe, condition impossible)
+    if (criteria?.kind === "false") {
+      funnel.unwearable++; // jamais portable (autre classe, condition impossible)
+      continue;
+    }
     considered++;
+    const f = (funnel.byFamily[item.family] ??= { considered: 0, kept: 0 });
+    f.considered++;
     const v = vecOf(item.effects);
     const set = setOfItem.get(item.id) ?? -1;
     const hi = new Float64Array(v);
@@ -600,6 +625,10 @@ export function buildDamageModel(input: DamageModelInput) {
     }
     if (removed === 0) break;
   }
+  for (const [family, list] of byFamily) {
+    const f = funnel.byFamily[family];
+    if (f) f.kept = list.length;
+  }
 
   const itemById = new Map(input.items.map((i) => [i.id, i]));
   /** Dégâts exacts d'un stuff donné par ses objets (bonus de panoplie compris). */
@@ -695,6 +724,7 @@ export function buildDamageModel(input: DamageModelInput) {
     proxyWeights,
     byFamily,
     considered,
+    funnel,
     evaluateSlots,
     slotsOf,
   };

@@ -42,6 +42,34 @@ export interface MilpInput extends DamageModelInput {
   workers?: number;
   /** Appelé après chaque cellule : meilleur stuff actuel et travail restant. */
   onProgress?: (progress: MilpProgress) => void;
+  /** Appelé à la fin de chaque cellule (explication, débogage). */
+  onCell?: (cell: CellTrace) => void;
+}
+
+/** Plage d'une cellule : % dommages (mêlée ou distance) et % critique. */
+export interface CellRange {
+  pct: [number, number] | null;
+  crit: [number, number] | null;
+  cdPositive: boolean;
+  /** Borne héritée de la cellule mère. */
+  upper: number | null;
+}
+
+/** Issue d'une cellule traitée. */
+export interface CellTrace extends CellRange {
+  /**
+   * relax : écartée par la relaxation continue ; milp : écartée par le programme
+   * en nombres entiers ; split : coupée en deux ; cut : stuff interdit, recommencée ;
+   * failed : erreur du solveur.
+   */
+  outcome: "relax" | "milp" | "split" | "cut" | "failed";
+  /** Dégâts du stuff trouvé dans la cellule, s'il y en a un. */
+  found: number | null;
+  /** Meilleure borne de la relaxation continue. */
+  relax: number | null;
+  /** Borne exacte du programme en nombres entiers (cellule coupée). */
+  bound: number | null;
+  ms: number;
 }
 
 export interface MilpProgress {
@@ -51,6 +79,8 @@ export interface MilpProgress {
   upper: number;
   cellsLeft: number;
   solves: number;
+  /** Cellules en cours de calcul (une par fil). */
+  running: CellRange[];
 }
 
 export interface MilpResult {
@@ -641,7 +671,27 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       Math.max(bestDamage, lostUpper),
     );
   /** Traite une cellule : bornes, programmes en nombres entiers, puis coupe ou abandon. */
+  const rangeOf = (cell: Cell): CellRange => ({
+    pct: pctDims.length > 0 ? [cell.pctLo[0]!, cell.pctHi[0]!] : null,
+    crit: withCrit ? [cell.critLo, cell.critHi] : null,
+    cdPositive: cell.cdPositive,
+    upper: Number.isFinite(cell.upper) ? cell.upper : null,
+  });
+  const finite = (x: number) => (Number.isFinite(x) ? x : null);
   async function processCell(cell: Cell): Promise<void> {
+    const t0 = Date.now();
+    let found: number | null = null;
+    let bound = -Infinity;
+    let relaxMax = -Infinity;
+    const trace = (outcome: CellTrace["outcome"]) =>
+      input.onCell?.({
+        ...rangeOf(cell),
+        outcome,
+        found,
+        relax: finite(relaxMax),
+        bound: finite(bound),
+        ms: Date.now() - t0,
+      });
     stats.cells++;
     // Maximum de U dans la cellule : le meilleur des programmes (un par combo).
     let cellUpper = -Infinity;
@@ -680,6 +730,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       } catch {
         // Pas de conclusion : le programme en nombres entiers tranchera.
       }
+      relaxMax = Math.max(relaxMax, relaxUpper);
       if (relaxUpper <= bestDamage + eps) {
         stats.relaxPruned++;
         continue;
@@ -782,6 +833,8 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       const picked = stuff.picked;
       // Chaque stuff trouvé est évalué avec la vraie formule.
       const value = model.objective(gearOf(picked), model.pointsVec(stuff.points));
+      found = Math.max(found ?? -Infinity, value);
+      bound = Math.max(bound, upper);
       if (value > bestDamage) {
         bestDamage = value;
         bestSlots = slotsFromSolution(picked);
@@ -797,9 +850,14 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     if (failed) {
       proven = false;
       lostUpper = Math.max(lostUpper, cell.upper);
+      trace("failed");
       return;
     }
-    if (!chosen || cellUpper <= bestDamage + eps) return;
+    if (!chosen || cellUpper <= bestDamage + eps) {
+      trace(open.length === 0 ? "relax" : "milp");
+      return;
+    }
+    bound = cellUpper;
     const gear = gearOf(chosen);
     const pts = model.pointsVec(chosenPoints);
     for (let d = 0; d < D; d++) gear[d]! += pts[d]!;
@@ -849,12 +907,14 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
         upper: cellUpper,
         cuts: [...cell.cuts, [...chosen]],
       });
+      trace("cut");
       return;
     }
     const lo: Cell = { ...cell, pctLo: [...cell.pctLo], pctHi: [...cell.pctHi], upper: cellUpper };
     const hi: Cell = { ...cell, pctLo: [...cell.pctLo], pctHi: [...cell.pctHi], upper: cellUpper };
     (bestSplit as { apply: (lo: Cell, hi: Cell) => void }).apply(lo, hi);
     queue.push(hi, lo);
+    trace("split");
   }
 
   // Plusieurs cellules à la fois (une par fil de calcul), les plus prometteuses d'abord.
@@ -867,6 +927,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       upper: upperLeft(),
       cellsLeft: queue.length + running.size,
       solves: solves + relaxSolves,
+      running: [...running.values()].map(rangeOf),
     });
     if (Date.now() - started > timeLimit) timeUp = true;
     while (!timeUp && running.size < solver.size && queue.length > 0) {

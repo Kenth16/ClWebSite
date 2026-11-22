@@ -98,7 +98,8 @@ export const dofusRoutes: FastifyPluginAsync<{
   const jobParams = z.object({ id: z.uuid("Identifiant invalide.") });
   app.get("/optimize/:id", async (request) => {
     const { id } = parseInput(jobParams, request.params);
-    const job = jobs.get(id);
+    const since = Number((request.query as { since?: string }).since ?? 0);
+    const job = jobs.get(id, Number.isFinite(since) ? since : 0);
     if (!job) throw new HttpError(404, "Ce calcul n'existe plus.");
     return { job };
   });

@@ -25,7 +25,7 @@ import {
 import { HttpError } from "../../lib/errors";
 import type { DofusClient } from "./client";
 import { defaultWorkers } from "./highs-pool";
-import { optimizeTurnDamageMilp } from "./milp";
+import { optimizeTurnDamageMilp, type CellRange, type CellTrace } from "./milp";
 import type { DofusDbClient } from "./spells";
 
 /** Temps maximal d'une preuve ; au-delà, le meilleur stuff trouvé est rendu. */
@@ -47,6 +47,22 @@ export interface JobProgress {
   solves: number;
 }
 
+/** Déroulé détaillé du calcul, pour l'explication affichée au joueur (et le débogage). */
+export interface JobTrace {
+  /** Entonnoir des objets : écartés (niveau, interdits, non portables) puis candidats. */
+  funnel: unknown;
+  /** Dégâts du stuff de départ trouvé par la recherche locale. */
+  localDamage: number | null;
+  /** Évolution (ms, meilleurs dégâts, borne) pendant la preuve. */
+  history: [number, number | null, number | null][];
+  /** Cellules en cours de calcul. */
+  running: CellRange[];
+  /** Nombre total de cellules traitées. */
+  cellCount: number;
+}
+
+const TRACE_CELLS_MAX = 20_000;
+
 export interface OptimizeJobView {
   id: string;
   status: JobStatus;
@@ -56,11 +72,17 @@ export interface OptimizeJobView {
   result?: unknown;
   error?: string;
   elapsedMs: number;
+  trace: JobTrace;
+  /** Cellules traitées depuis l'index demandé (`since`). */
+  cells: CellTrace[];
+  /** Index de la première cellule renvoyée. */
+  cellsFrom: number;
 }
 
-interface Job extends OptimizeJobView {
+interface Job extends Omit<OptimizeJobView, "cells" | "cellsFrom"> {
   createdAt: number;
   startedAt: number | null;
+  allCells: CellTrace[];
 }
 
 /**
@@ -89,6 +111,8 @@ export class OptimizeJobs {
       position: 0,
       progress: { phase: "data", damage: null, upper: null, cellsLeft: 0, solves: 0 },
       elapsedMs: 0,
+      trace: { funnel: null, localDamage: null, history: [], running: [], cellCount: 0 },
+      allCells: [],
       createdAt: Date.now(),
       startedAt: null,
     };
@@ -98,13 +122,14 @@ export class OptimizeJobs {
     return this.view(job);
   }
 
-  get(id: string): OptimizeJobView | null {
+  get(id: string, since = 0): OptimizeJobView | null {
     const job = this.jobs.get(id);
-    return job ? this.view(job) : null;
+    return job ? this.view(job, since) : null;
   }
 
-  private view(job: Job): OptimizeJobView {
+  private view(job: Job, since = 0): OptimizeJobView {
     const index = this.waiting.indexOf(job.id);
+    const from = Math.max(0, Math.min(since, job.allCells.length));
     return {
       id: job.id,
       status: job.status,
@@ -113,6 +138,9 @@ export class OptimizeJobs {
       result: job.result,
       error: job.error,
       elapsedMs: job.startedAt ? Date.now() - job.startedAt : 0,
+      trace: { ...job.trace, history: [...job.trace.history] },
+      cells: job.allCells.slice(from, from + 2000),
+      cellsFrom: from,
     };
   }
 
@@ -130,7 +158,7 @@ export class OptimizeJobs {
     job.status = "running";
     job.startedAt = Date.now();
     try {
-      job.result = await this.optimize(request, job.progress);
+      job.result = await this.optimize(request, job);
       job.status = "done";
     } catch (e) {
       job.status = "error";
@@ -140,7 +168,8 @@ export class OptimizeJobs {
     }
   }
 
-  private async optimize(request: OptimizeRequest, progress: JobProgress) {
+  private async optimize(request: OptimizeRequest, job: Job) {
+    const { progress, trace } = job;
     const { breedId, level, ap, exos, critical, attack, scrolls, minimums } = request;
     const [breeds, classSpells, equipment, sets] = await Promise.all([
       this.spells.breeds(),
@@ -209,6 +238,7 @@ export class OptimizeJobs {
       pointsBudget,
       minimums: mins,
     });
+    trace.funnel = model.funnel;
     const allocations: Partial<Record<StatKey, number>>[] = [];
     const elementStats = elementCharacteristics(elements);
     allocations.push(allocatePoints(level, elementStats));
@@ -251,10 +281,13 @@ export class OptimizeJobs {
       }
     }
     progress.damage = start ? startDamage : null;
+    trace.localDamage = progress.damage;
     await new Promise((resolve) => setImmediate(resolve));
 
     // 2. Preuve par programmation linéaire en nombres entiers (HiGHS), en parallèle.
     progress.phase = "proof";
+    const proofStart = Date.now();
+    let lastSample = -Infinity;
     const proof = await optimizeTurnDamageMilp({
       level,
       elements,
@@ -277,8 +310,25 @@ export class OptimizeJobs {
         progress.upper = p.upper;
         progress.cellsLeft = p.cellsLeft;
         progress.solves = p.solves;
+        trace.running = p.running;
+        const t = Date.now() - proofStart;
+        if (t - lastSample >= 150 && trace.history.length < 4000) {
+          lastSample = t;
+          const finite = (x: number) => (Number.isFinite(x) ? x : null);
+          trace.history.push([t, finite(p.damage), finite(p.upper)]);
+        }
+      },
+      onCell: (cell) => {
+        trace.cellCount++;
+        if (job.allCells.length < TRACE_CELLS_MAX) job.allCells.push(cell);
       },
     });
+    trace.running = [];
+    trace.history.push([
+      Date.now() - proofStart,
+      Number.isFinite(proof.damage) ? proof.damage : null,
+      Number.isFinite(proof.upper) ? proof.upper : null,
+    ]);
     if (proof.damage === -Infinity) {
       throw new HttpError(
         422,

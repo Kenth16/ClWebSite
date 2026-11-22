@@ -29,6 +29,7 @@ import {
   type LineDamage,
   type SlotId,
   type StatTotals,
+  type TurnSpell,
 } from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +39,12 @@ import { EffectList, ItemIcon } from "./item-picker";
 import { StatIcon, statTone } from "./stat-icon";
 import { STUFF_STORAGE_KEY } from "./storage";
 import { RemoteIcon, useBreeds } from "./tags";
+import {
+  OptimizerExplainer,
+  type CellTrace,
+  type ExplainerState,
+  type JobTrace,
+} from "./optimizer-explainer";
 
 interface JobView {
   id: string;
@@ -53,6 +60,9 @@ interface JobView {
   result?: OptimizeResponse;
   error?: string;
   elapsedMs: number;
+  trace: JobTrace;
+  cells: CellTrace[];
+  cellsFrom: number;
 }
 
 interface SpellResult {
@@ -221,6 +231,10 @@ export function StuffOptimizer() {
   const [job, setJob] = React.useState<JobView | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<OptimizeResponse | null>(null);
+  // Déroulé du dernier calcul (explication) : sorts lancés et cellules reçues.
+  const [runSpells, setRunSpells] = React.useState<TurnSpell[]>([]);
+  const [runOptions, setRunOptions] = React.useState({ attack, critical: true, ap });
+  const [cells, setCells] = React.useState<CellTrace[]>([]);
 
   // Sorts de la classe choisie (chargés une fois par classe).
   React.useEffect(() => {
@@ -261,6 +275,13 @@ export function StuffOptimizer() {
     setRunning(true);
     setError(null);
     setJob(null);
+    setResult(null);
+    setCells([]);
+    const chosenSpells = (damageSpells ?? []).filter((s) => selected.has(s.id));
+    setRunSpells(
+      chosenSpells.map((spell) => ({ spell, grade: spellGradeAt(spell, level)!, limit: 1 })),
+    );
+    setRunOptions({ attack, critical: critical === "yes", ap });
     const minimums: Minimums = {
       hp: numberOrUndefined(hp),
       mp: numberOrUndefined(mp),
@@ -276,7 +297,7 @@ export function StuffOptimizer() {
         body: {
           breedId,
           level,
-          spellIds: spellIds.filter((id) => damageSpells?.some((s) => s.id === id)),
+          spellIds: chosenSpells.map((s) => s.id),
           ap,
           exos,
           critical: critical === "yes",
@@ -286,10 +307,29 @@ export function StuffOptimizer() {
         },
       });
       setJob(current);
+      // Cellules reçues au fur et à mesure : on ne redemande que les nouvelles.
+      let received = 0;
+      const accept = (view: JobView) => {
+        const fresh = view.cells.slice(Math.max(0, received - view.cellsFrom));
+        received = view.cellsFrom + view.cells.length;
+        if (fresh.length > 0) setCells((list) => [...list, ...fresh]);
+      };
+      accept(current);
       while (current.status === "queued" || current.status === "running") {
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        current = (await apiFetch<{ job: JobView }>(`/dofus/optimize/${current.id}`)).job;
+        current = (
+          await apiFetch<{ job: JobView }>(`/dofus/optimize/${current.id}?since=${received}`)
+        ).job;
+        accept(current);
         setJob(current);
+      }
+      // Dernières cellules (plus de 2 000 par réponse au plus).
+      while (current.cells.length > 0 && received < current.trace.cellCount) {
+        current = (
+          await apiFetch<{ job: JobView }>(`/dofus/optimize/${current.id}?since=${received}`)
+        ).job;
+        if (current.cells.length === 0) break;
+        accept(current);
       }
       if (current.status === "error" || !current.result) {
         throw new ApiError(500, current.error ?? "L'optimisation a échoué.");
@@ -325,6 +365,22 @@ export function StuffOptimizer() {
   }
 
   const itemById = new Map(result?.items.map((i) => [i.id, i]));
+  const explainer: ExplainerState | null = job
+    ? {
+        phase:
+          job.status === "queued"
+            ? "queued"
+            : job.status === "running"
+              ? job.progress.phase
+              : "done",
+        trace: job.trace,
+        cells,
+        damage: job.progress.damage,
+        upper: job.progress.upper,
+        proven: result?.proof.proven ?? null,
+        elapsedMs: job.elapsedMs,
+      }
+    : null;
 
   return (
     <div className="space-y-6">
@@ -564,6 +620,17 @@ export function StuffOptimizer() {
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
       </section>
+
+      {explainer && runSpells.length > 0 && (
+        <OptimizerExplainer
+          state={explainer}
+          spells={runSpells}
+          totals={result?.totals ?? null}
+          attack={runOptions.attack}
+          critical={runOptions.critical}
+          ap={runOptions.ap}
+        />
+      )}
 
       {result && (
         <section className="space-y-4" aria-live="polite">

@@ -769,3 +769,74 @@ export function rotationDamage(
   }
   return sum;
 }
+
+// ─── Barème unique de la rotation (explication de l'optimiseur) ────────────
+
+export interface MergedElement {
+  element: DofusElement;
+  /** Lignes de dégâts de cet élément, tous sorts confondus. */
+  lines: number;
+  /** Dont lignes de vol de vie. */
+  steal: number;
+  /** Somme des jets de base (coup normal). */
+  normal: { min: number; max: number };
+  /** Somme des jets de base en coup critique (lignes qui en ont un). */
+  critical: { min: number; max: number } | null;
+}
+
+export interface MergedRotation {
+  spells: number;
+  /** PA de tous les sorts additionnés (peut dépasser les PA du stuff). */
+  apCost: number;
+  lines: number;
+  /** Jets de base additionnés : moyenne d'un coup normal, sans aucune caractéristique. */
+  baseAverage: number;
+  elements: MergedElement[];
+}
+
+/**
+ * Les sorts choisis, chacun lancé une fois, réunis en un seul « sort » : ses
+ * lignes de dégâts sont celles de tous les sorts, regroupées par élément. C'est
+ * ce barème que l'optimiseur maximise.
+ */
+export function mergeRotation(spells: readonly TurnSpell[]): MergedRotation {
+  const byElement = new Map<DofusElement, MergedElement>();
+  let lines = 0;
+  let baseAverage = 0;
+  for (const { grade } of spells) {
+    grade.lines.forEach((line, i) => {
+      lines++;
+      baseAverage += (line.min + line.max) / 2;
+      const e = byElement.get(line.element) ?? {
+        element: line.element,
+        lines: 0,
+        steal: 0,
+        normal: { min: 0, max: 0 },
+        critical: null,
+      };
+      e.lines++;
+      if (line.kind === "steal") e.steal++;
+      e.normal.min += line.min;
+      e.normal.max += line.max;
+      const crit =
+        grade.criticalLines.find((c, j) => j === i && c.element === line.element) ??
+        grade.criticalLines.find((c) => c.element === line.element && c.kind === line.kind);
+      const c = crit ?? line;
+      e.critical = {
+        min: (e.critical?.min ?? 0) + c.min,
+        max: (e.critical?.max ?? 0) + c.max,
+      };
+      byElement.set(line.element, e);
+    });
+  }
+  const order = Object.keys(ELEMENTS) as DofusElement[];
+  return {
+    spells: spells.length,
+    apCost: spells.reduce((sum, s) => sum + s.grade.apCost, 0),
+    lines,
+    baseAverage: Math.round(baseAverage * 10) / 10,
+    elements: [...byElement.values()].sort(
+      (a, b) => order.indexOf(a.element) - order.indexOf(b.element),
+    ),
+  };
+}
