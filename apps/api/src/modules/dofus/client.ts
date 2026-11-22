@@ -1,4 +1,5 @@
 import {
+  DUPLICATE_ITEMS,
   SLOT_TYPES,
   itemMatchesStatFilters,
   slotTypes,
@@ -10,6 +11,8 @@ import {
 } from "@kenpai/shared";
 import { HttpError } from "../../lib/errors";
 import { normalizeItem, normalizeSet, type RawItem, type RawSet } from "./normalize";
+
+const DUPLICATE_IDS = new Set(DUPLICATE_ITEMS.map((i) => i.id));
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 3000;
@@ -137,7 +140,8 @@ export class DofusClient {
   private async allOfTypes(types: readonly string[]): Promise<DofusItem[]> {
     const params = new URLSearchParams({ "filter[type.name_id]": [...types].sort().join(",") });
     const page = await this.get<{ items: RawItem[] }>(`/items/equipment/all?${params}`);
-    return page.items.map(normalizeItem);
+    // Les doublons sans effet (anciens Dofus) ne sont proposés nulle part.
+    return page.items.map(normalizeItem).filter((item) => !DUPLICATE_IDS.has(item.id));
   }
 
   /**

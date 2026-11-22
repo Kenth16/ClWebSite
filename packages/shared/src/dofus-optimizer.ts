@@ -305,7 +305,10 @@ export function topCombos(
         const cost = n * s.grade.apCost;
         for (let a = cost; a <= ap; a++) {
           for (const e of dp[a - cost]!) {
-            next[a]!.push({ damage: e.damage + n * value, picks: [...e.picks, { spell: s, casts: n }] });
+            next[a]!.push({
+              damage: e.damage + n * value,
+              picks: [...e.picks, { spell: s, casts: n }],
+            });
           }
         }
       }
@@ -325,7 +328,12 @@ export function topCombos(
   const chosen: Entry[] = [];
   for (const e of all) {
     if (chosen.length >= count) break;
-    if (all.some((o) => o !== e && o.picks.length >= e.picks.length && contains(o, e) && o.damage > e.damage)) continue;
+    if (
+      all.some(
+        (o) => o !== e && o.picks.length >= e.picks.length && contains(o, e) && o.damage > e.damage,
+      )
+    )
+      continue;
     chosen.push(e);
   }
   return chosen.map((e) => {
@@ -392,7 +400,16 @@ export const EXCLUDED_ITEMS: readonly { id: number; name: string }[] = [
   { id: 7913, name: "Le Diviseur (MJ)" },
   { id: 9031, name: "Annobusé de Maître Jarbo" },
 ];
-const EXCLUDED_IDS = new Set(EXCLUDED_ITEMS.map((i) => i.id));
+/**
+ * Doublons sans effet : même nom que le vrai Dofus, mais sans son sort passif
+ * (anciennes versions encore présentes dans les données). Retirés de la recherche.
+ */
+export const DUPLICATE_ITEMS: readonly { id: number; name: string }[] = [
+  { id: 21186, name: "Dofus Vulbis (niveau 100, sans effet)" },
+  { id: 20833, name: "Dofus Cacao (sans effet)" },
+  { id: 29134, name: "Dofus Sylvestre (sans effet)" },
+];
+const EXCLUDED_IDS = new Set([...EXCLUDED_ITEMS, ...DUPLICATE_ITEMS].map((i) => i.id));
 /**
  * Exclus par leur nom : objets de MJ « (MJ) » et Panoplie Ankarton (8 objets,
  * pratiquement impossibles à obtenir en jeu).

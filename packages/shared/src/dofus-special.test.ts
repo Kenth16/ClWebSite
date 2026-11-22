@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { STATS, computeCharacter, computeSpellDamage, type StatTotals } from "./dofus";
 import { SPECIAL_EFFECTS, specialBuffs, specialEffectOf } from "./dofus-special";
+import { isAllowedItem } from "./dofus-optimizer";
 
 const zeros = () =>
   ({ vitality: 0, wisdom: 0, strength: 0, intelligence: 0, chance: 0, agility: 0 }) as const;
@@ -10,6 +11,13 @@ describe("effets spéciaux des Dofus", () => {
     expect(specialEffectOf({ id: 8698 })?.key).toBe("nebuleux");
     // Ancien Dofus Vulbis (niveau 100) : même nom, sans l'effet.
     expect(specialEffectOf({ id: 21186 })).toBeNull();
+  });
+
+  it("écarte les doublons sans effet, garde les vrais Dofus", () => {
+    expect(isAllowedItem({ id: 21186, name: "Dofus Vulbis" })).toBe(false);
+    expect(isAllowedItem({ id: 6980, name: "Dofus Vulbis" })).toBe(true);
+    expect(isAllowedItem({ id: 29134, name: "Dofus Sylvestre" })).toBe(false);
+    expect(isAllowedItem({ id: 20833, name: "Dofus Cacao" })).toBe(false);
   });
 
   it("n'ajoute que le bonus choisi, rien sans choix", () => {
