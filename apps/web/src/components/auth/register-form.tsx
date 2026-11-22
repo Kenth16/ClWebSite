@@ -69,24 +69,30 @@ export function RegisterForm({ redirectTo }: { redirectTo: string }) {
         required
         error={fields.email}
       />
-      <FormField
-        name="password"
-        label="Mot de passe"
-        type="password"
-        autoComplete="new-password"
-        required
-        minLength={PASSWORD_MIN}
-        hint={`Au moins ${PASSWORD_MIN} caractères.`}
-        error={fields.password}
-      />
-      <FormField
-        name="confirm"
-        label="Confirmer le mot de passe"
-        type="password"
-        autoComplete="new-password"
-        required
-        error={fields.confirm}
-      />
+      <div className="grid gap-1.5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormField
+            name="password"
+            label="Mot de passe"
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={PASSWORD_MIN}
+            error={fields.password}
+          />
+          <FormField
+            name="confirm"
+            label="Confirmation"
+            type="password"
+            autoComplete="new-password"
+            required
+            error={fields.confirm}
+          />
+        </div>
+        {!fields.password && !fields.confirm && (
+          <p className="text-sm text-muted-foreground">Au moins {PASSWORD_MIN} caractères.</p>
+        )}
+      </div>
       <Button type="submit" size="lg" disabled={pending} className="mt-1">
         <UserPlus aria-hidden="true" />
         {pending ? "Création du compte…" : "Créer mon compte"}

@@ -1,13 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { Check, Inbox, Send, UserMinus, UserPlus, Users, X } from "lucide-react";
+import { Check, Inbox, Search, Send, UserMinus, UserPlus, Users, X } from "lucide-react";
 import type { Friend, FriendRequest, FriendsOverview, PublicUser } from "@kenpai/shared";
 import { FormField } from "@/components/auth/form-field";
 import { EmptyState } from "@/components/page/empty-state";
-import { SectionTitle } from "@/components/page/page-header";
 import { UserAvatar } from "@/components/user-avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,7 +13,9 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
@@ -23,12 +23,21 @@ import { cn } from "@/lib/utils";
 const REFRESH_MS = 20 * 1000;
 
 type Notice = { kind: "success" | "error"; text: string } | null;
+type Tab = "friends" | "incoming" | "outgoing";
+
+/** Grille de cartes, commune aux amis, aux demandes et aux squelettes. */
+const GRID = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
 
 export function FriendsPanel({ initial }: { initial: FriendsOverview }) {
   const [data, setData] = React.useState(initial);
   const [notice, setNotice] = React.useState<Notice>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [toRemove, setToRemove] = React.useState<Friend | null>(null);
+  const [tab, setTab] = React.useState<Tab>(
+    initial.friends.length === 0 && initial.incoming.length > 0 ? "incoming" : "friends",
+  );
+  const [query, setQuery] = React.useState("");
+  const [adding, setAdding] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     try {
@@ -74,161 +83,249 @@ export function FriendsPanel({ initial }: { initial: FriendsOverview }) {
     }
   }
 
+  const q = query.trim().toLocaleLowerCase("fr");
+  const matches = (user: PublicUser) => !q || user.username.toLocaleLowerCase("fr").includes(q);
+  // En ligne d'abord, puis par pseudo.
+  const friends = data.friends
+    .filter(matches)
+    .sort((a, b) => Number(b.online) - Number(a.online) || a.username.localeCompare(b.username));
+  const incoming = data.incoming.filter((r) => matches(r.user));
+  const outgoing = data.outgoing.filter((r) => matches(r.user));
   const online = data.friends.filter((f) => f.online).length;
 
-  return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
-      <div className="order-2 space-y-8 lg:order-1">
-        <section aria-labelledby="amis-liste">
-          <SectionTitle
-            id="amis-liste"
-            action={
-              data.friends.length > 0 && (
-                <p className="text-sm text-muted-foreground">
-                  {online} en ligne sur {data.friends.length}
-                </p>
-              )
-            }
-          >
-            Mes amis
-          </SectionTitle>
-          {data.friends.length === 0 ? (
-            <EmptyState icon={Users} title="Aucun ami pour l'instant">
-              Invitez vos camarades avec leur pseudo pour suivre leur présence.
-            </EmptyState>
-          ) : (
-            <ul className="grid gap-2.5 sm:grid-cols-2">
-              {data.friends.map((friend) => (
-                <li key={friend.id}>
-                  <PersonRow user={friend} online={friend.online}>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Retirer ${friend.username} de mes amis`}
-                      title="Retirer de mes amis"
-                      onClick={() => setToRemove(friend)}
-                      className="text-muted-foreground hover:text-destructive"
-                    >
-                      <UserMinus aria-hidden="true" />
-                    </Button>
-                  </PersonRow>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+  const tabs: { id: Tab; label: string; count: number; highlight?: boolean }[] = [
+    { id: "friends", label: "Mes amis", count: data.friends.length },
+    { id: "incoming", label: "Demandes reçues", count: data.incoming.length, highlight: true },
+    { id: "outgoing", label: "Demandes envoyées", count: data.outgoing.length },
+  ];
 
-        {data.outgoing.length > 0 && (
-          <section aria-labelledby="amis-envoyees">
-            <SectionTitle id="amis-envoyees">Demandes envoyées</SectionTitle>
-            <ul className="grid gap-2.5 sm:grid-cols-2">
-              {data.outgoing.map((request) => (
-                <li key={request.id}>
-                  <PersonRow user={request.user} detail={`Invité ${relative(request)}`}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy === request.id}
-                      onClick={() =>
-                        run(
-                          request.id,
-                          () => apiFetch(`/friends/requests/${request.id}`, { method: "DELETE" }),
-                          `Demande à ${request.user.username} annulée.`,
-                        )
-                      }
-                    >
-                      Annuler
-                    </Button>
-                  </PersonRow>
-                </li>
-              ))}
-            </ul>
-          </section>
+  return (
+    <div className="space-y-5">
+      {/* Barre d'en-tête : titre et compteur, onglets, recherche, ajout */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card/70 p-3">
+        <h2 className="flex items-center gap-2 pl-1 font-serif text-xl font-semibold">
+          Amis
+          <span className="rounded-md bg-primary px-2 py-0.5 font-sans text-sm font-semibold text-primary-foreground tabular-nums">
+            {data.friends.length}
+          </span>
+        </h2>
+        {data.friends.length > 0 && (
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <span className="size-2 rounded-full bg-primary" aria-hidden="true" />
+            {online} en ligne
+          </p>
         )}
+        <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <label className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+            <span className="sr-only">Rechercher un ami</span>
+            <Search
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Rechercher un ami"
+              className="h-9 pl-9 text-sm"
+            />
+          </label>
+          <Dialog open={adding} onOpenChange={setAdding}>
+            <DialogTrigger asChild>
+              <Button size="sm" className="h-9">
+                <UserPlus aria-hidden="true" />
+                Ajouter un ami
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-sm">
+              <div>
+                <DialogTitle>Ajouter un ami</DialogTitle>
+                <DialogDescription className="mt-1">
+                  Saisissez son pseudo : il recevra une demande d&apos;ami.
+                </DialogDescription>
+              </div>
+              <AddFriendForm
+                onAdded={async (message) => {
+                  setAdding(false);
+                  setNotice({ kind: "success", text: message });
+                  setTab("outgoing");
+                  await refresh();
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
-      <aside className="order-1 space-y-8 lg:order-2">
-        <AddFriendForm
-          onAdded={async (message) => {
-            setNotice({ kind: "success", text: message });
-            await refresh();
-          }}
-        />
-
-        <section aria-labelledby="amis-recues">
-          <SectionTitle
-            id="amis-recues"
-            action={data.incoming.length > 0 && <Badge>{data.incoming.length}</Badge>}
+      <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Listes">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              "flex h-9 items-center gap-2 rounded-full border px-3.5 text-sm transition-colors hover:bg-accent",
+              tab === t.id
+                ? "border-primary bg-primary/10 font-semibold"
+                : "bg-card/60 text-muted-foreground",
+            )}
           >
-            Demandes reçues
-          </SectionTitle>
-          {data.incoming.length === 0 ? (
-            <p className="flex items-center gap-2 rounded-xl border border-dashed border-gold/35 bg-card/40 px-4 py-3 text-sm text-muted-foreground">
-              <Inbox className="size-4 shrink-0" aria-hidden="true" />
-              Aucune demande en attente.
-            </p>
-          ) : (
-            <ul className="grid gap-2.5">
-              {data.incoming.map((request) => (
-                <li key={request.id}>
-                  <PersonRow user={request.user} detail={`Reçue ${relative(request)}`}>
-                    <Button
-                      size="icon"
-                      aria-label={`Accepter la demande de ${request.user.username}`}
-                      title="Accepter"
-                      disabled={busy === request.id}
-                      onClick={() =>
-                        run(
-                          request.id,
-                          () =>
-                            apiFetch(`/friends/requests/${request.id}/accept`, { method: "POST" }),
-                          `${request.user.username} fait maintenant partie de vos amis.`,
-                        )
-                      }
-                    >
-                      <Check aria-hidden="true" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      aria-label={`Refuser la demande de ${request.user.username}`}
-                      title="Refuser"
-                      disabled={busy === request.id}
-                      onClick={() =>
-                        run(
-                          request.id,
-                          () =>
-                            apiFetch(`/friends/requests/${request.id}/decline`, {
-                              method: "POST",
-                            }),
-                          `Demande de ${request.user.username} refusée.`,
-                        )
-                      }
-                    >
-                      <X aria-hidden="true" />
-                    </Button>
-                  </PersonRow>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <p role="status" aria-live="polite" className="empty:hidden">
-          {notice && (
+            {t.label}
             <span
               className={cn(
-                "block rounded-md border px-3 py-2 text-sm",
-                notice.kind === "success"
-                  ? "border-primary/30 bg-primary/10 text-primary"
-                  : "border-destructive/40 bg-destructive/10 text-destructive",
+                "min-w-5 rounded-full px-1.5 text-xs tabular-nums",
+                t.highlight && t.count > 0
+                  ? "bg-destructive text-background"
+                  : "bg-muted text-muted-foreground",
               )}
             >
-              {notice.text}
+              {t.count}
             </span>
-          )}
-        </p>
-      </aside>
+          </button>
+        ))}
+      </div>
+
+      <p role="status" aria-live="polite" className="empty:hidden">
+        {notice && (
+          <span
+            className={cn(
+              "block rounded-md border px-3 py-2 text-sm",
+              notice.kind === "success"
+                ? "border-primary/30 bg-primary/10 text-primary"
+                : "border-destructive/40 bg-destructive/10 text-destructive",
+            )}
+          >
+            {notice.text}
+          </span>
+        )}
+      </p>
+
+      {tab === "friends" &&
+        (data.friends.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title="Aucun ami pour l'instant"
+            action={
+              <Button onClick={() => setAdding(true)}>
+                <UserPlus aria-hidden="true" />
+                Ajouter un ami
+              </Button>
+            }
+          >
+            Invitez vos camarades avec leur pseudo pour suivre leur présence.
+          </EmptyState>
+        ) : friends.length === 0 ? (
+          <NoMatch query={query} />
+        ) : (
+          <ul className={GRID}>
+            {friends.map((friend) => (
+              <li key={friend.id}>
+                <PersonCard
+                  user={friend}
+                  online={friend.online}
+                  detail={friend.online ? "En ligne" : "Hors ligne"}
+                  sub={`Amis depuis ${since(friend.since)}`}
+                >
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setToRemove(friend)}
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    <UserMinus aria-hidden="true" />
+                    Retirer
+                  </Button>
+                </PersonCard>
+              </li>
+            ))}
+          </ul>
+        ))}
+
+      {tab === "incoming" &&
+        (data.incoming.length === 0 ? (
+          <EmptyState icon={Inbox} title="Aucune demande en attente">
+            Les demandes d&apos;ami que vous recevez apparaîtront ici.
+          </EmptyState>
+        ) : incoming.length === 0 ? (
+          <NoMatch query={query} />
+        ) : (
+          <ul className={GRID}>
+            {incoming.map((request) => (
+              <li key={request.id}>
+                <PersonCard user={request.user} detail={`Demande reçue ${relative(request)}`}>
+                  <Button
+                    size="sm"
+                    disabled={busy === request.id}
+                    onClick={() =>
+                      run(
+                        request.id,
+                        () =>
+                          apiFetch(`/friends/requests/${request.id}/accept`, { method: "POST" }),
+                        `${request.user.username} fait maintenant partie de vos amis.`,
+                      )
+                    }
+                  >
+                    <Check aria-hidden="true" />
+                    Accepter
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy === request.id}
+                    onClick={() =>
+                      run(
+                        request.id,
+                        () =>
+                          apiFetch(`/friends/requests/${request.id}/decline`, {
+                            method: "POST",
+                          }),
+                        `Demande de ${request.user.username} refusée.`,
+                      )
+                    }
+                  >
+                    <X aria-hidden="true" />
+                    Refuser
+                  </Button>
+                </PersonCard>
+              </li>
+            ))}
+          </ul>
+        ))}
+
+      {tab === "outgoing" &&
+        (data.outgoing.length === 0 ? (
+          <EmptyState icon={Send} title="Aucune demande envoyée">
+            Utilisez « Ajouter un ami » pour inviter quelqu&apos;un avec son pseudo.
+          </EmptyState>
+        ) : outgoing.length === 0 ? (
+          <NoMatch query={query} />
+        ) : (
+          <ul className={GRID}>
+            {outgoing.map((request) => (
+              <li key={request.id}>
+                <PersonCard user={request.user} detail={`Invité ${relative(request)}`}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy === request.id}
+                    onClick={() =>
+                      run(
+                        request.id,
+                        () => apiFetch(`/friends/requests/${request.id}`, { method: "DELETE" }),
+                        `Demande à ${request.user.username} annulée.`,
+                      )
+                    }
+                  >
+                    <X aria-hidden="true" />
+                    Annuler la demande
+                  </Button>
+                </PersonCard>
+              </li>
+            ))}
+          </ul>
+        ))}
 
       <Dialog open={toRemove !== null} onOpenChange={(open) => !open && setToRemove(null)}>
         <DialogContent className="max-w-md">
@@ -264,6 +361,14 @@ export function FriendsPanel({ initial }: { initial: FriendsOverview }) {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function NoMatch({ query }: { query: string }) {
+  return (
+    <p className="rounded-xl border border-dashed bg-card/40 px-4 py-8 text-center text-sm text-muted-foreground">
+      Personne ne correspond à « {query.trim()} ».
+    </p>
   );
 }
 
@@ -304,70 +409,102 @@ function AddFriendForm({ onAdded }: { onAdded: (message: string) => Promise<void
   }
 
   return (
-    <section
-      aria-labelledby="amis-ajouter"
-      className="frame-gilded rounded-xl border bg-card/70 p-5"
-    >
-      <h2 id="amis-ajouter" className="flex items-center gap-2 font-serif text-xl font-semibold">
-        <UserPlus className="size-5 text-primary" aria-hidden="true" />
-        Ajouter un ami
-      </h2>
-      <form onSubmit={onSubmit} noValidate className="mt-4 grid gap-3">
-        <FormField
-          name="username"
-          label="Pseudo"
-          autoComplete="off"
-          spellCheck={false}
-          maxLength={20}
-          error={error}
-        />
-        <Button type="submit" disabled={pending}>
-          <Send aria-hidden="true" />
-          {pending ? "Envoi…" : "Envoyer la demande"}
-        </Button>
-      </form>
-    </section>
+    <form onSubmit={onSubmit} noValidate className="grid gap-3">
+      <FormField
+        name="username"
+        label="Pseudo"
+        autoComplete="off"
+        spellCheck={false}
+        maxLength={20}
+        autoFocus
+        error={error}
+      />
+      <Button type="submit" disabled={pending}>
+        <Send aria-hidden="true" />
+        {pending ? "Envoi…" : "Envoyer la demande"}
+      </Button>
+    </form>
   );
 }
 
-/** Ligne d'une personne : avatar (avec pastille de présence), pseudo, actions. */
-function PersonRow({
+/**
+ * Carte d'une personne : grand avatar centré (avec pastille de présence),
+ * pseudo, statut, puis une barre d'actions en bas.
+ */
+function PersonCard({
   user,
   online,
   detail,
+  sub,
   children,
 }: {
   user: PublicUser;
   online?: boolean;
-  detail?: string;
+  detail: string;
+  sub?: string;
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border bg-card/70 p-3">
-      <span className="relative shrink-0">
-        <UserAvatar avatar={user.avatar} className="size-11" />
-        {online !== undefined && (
-          <span
-            aria-hidden="true"
-            className={cn(
-              "absolute -right-0.5 -bottom-0.5 size-3.5 rounded-full ring-2 ring-card",
-              online ? "bg-primary" : "bg-muted-foreground/45",
-            )}
-          />
-        )}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-medium">{user.username}</p>
-        <p
-          className={cn(
-            "truncate text-sm",
-            online ? "font-medium text-primary" : "text-muted-foreground",
+    <article className="flex h-full flex-col overflow-hidden rounded-xl border bg-card/70 shadow-xs transition-shadow hover:shadow-md">
+      <div className="flex flex-1 flex-col items-center px-4 pt-6 pb-4 text-center">
+        <span className="relative">
+          <span className="block rounded-full bg-gold-soft p-1.5">
+            <UserAvatar avatar={user.avatar} className="size-20" />
+          </span>
+          {online !== undefined && (
+            <span
+              aria-hidden="true"
+              className={cn(
+                "absolute right-1.5 bottom-1.5 size-4 rounded-full ring-3 ring-card",
+                online ? "bg-primary" : "bg-muted-foreground/45",
+              )}
+            />
           )}
-        >
-          {online !== undefined ? (online ? "En ligne" : "Hors ligne") : detail}
+        </span>
+        <h3 className="mt-3 w-full truncate font-semibold">{user.username}</h3>
+        <p className={cn("text-sm", online ? "font-medium text-primary" : "text-muted-foreground")}>
+          {detail}
         </p>
+        {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
       </div>
-      {children && <div className="flex shrink-0 items-center gap-1.5">{children}</div>}
+      {children && (
+        <div className="flex items-center justify-center gap-1.5 border-t bg-muted/40 px-2 py-1.5">
+          {children}
+        </div>
+      )}
+    </article>
+  );
+}
+
+/** Carte vide animée, affichée pendant le chargement (annexe 3). */
+export function PersonCardSkeleton() {
+  return (
+    <div aria-hidden="true" className="flex flex-col overflow-hidden rounded-xl border bg-card/70">
+      <div className="flex flex-col items-center gap-2.5 px-4 pt-6 pb-4">
+        <span className="size-23 animate-pulse rounded-full bg-muted" />
+        <span className="mt-1 h-4 w-28 animate-pulse rounded-full bg-muted" />
+        <span className="h-3 w-20 animate-pulse rounded-full bg-muted" />
+      </div>
+      <div className="h-11 border-t bg-muted/40" />
+    </div>
+  );
+}
+
+/** Grille de squelettes : même mise en page que la liste d'amis. */
+export function FriendsSkeleton({ count = 8 }: { count?: number }) {
+  return (
+    <div className="space-y-5" role="status" aria-label="Chargement des amis">
+      <div className="flex items-center gap-3 rounded-xl border bg-card/70 p-3">
+        <span className="h-6 w-24 animate-pulse rounded-full bg-muted" />
+        <span className="ml-auto h-9 w-64 max-w-[50%] animate-pulse rounded-md bg-muted" />
+      </div>
+      <ul className={GRID}>
+        {Array.from({ length: count }, (_, i) => (
+          <li key={i}>
+            <PersonCardSkeleton />
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -381,4 +518,10 @@ function relative({ createdAt }: FriendRequest): string {
   const hours = Math.round(minutes / 60);
   if (hours > -24) return rtf.format(hours, "hour");
   return rtf.format(Math.round(hours / 24), "day");
+}
+
+const monthYear = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" });
+
+function since(date: string): string {
+  return monthYear.format(new Date(date));
 }

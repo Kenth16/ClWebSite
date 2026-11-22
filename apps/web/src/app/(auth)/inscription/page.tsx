@@ -14,8 +14,8 @@ export default async function RegisterPage({ searchParams }: Props) {
   return (
     <>
       <div className="mb-6 text-center">
-        <h1 className="text-2xl font-semibold">Rejoindre l&apos;académie</h1>
-        <p className="mt-1 text-muted-foreground">Créez votre compte en quelques secondes.</p>
+        <h1 className="text-3xl font-semibold">Rejoindre l&apos;académie</h1>
+        <p className="mt-1.5 text-muted-foreground">Créez votre compte en quelques secondes.</p>
       </div>
       <RegisterForm redirectTo={redirectTo} />
     </>

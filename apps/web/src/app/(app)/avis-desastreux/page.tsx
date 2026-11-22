@@ -6,7 +6,6 @@ import { PageContainer } from "@/components/page/page-container";
 import { PageHeader, SectionTitle } from "@/components/page/page-header";
 import { CatalogPicker } from "@/components/reviews/catalog-picker";
 import { GamesList } from "@/components/reviews/games-list";
-import { CriteriaGrid } from "@/components/reviews/score";
 import { Button } from "@/components/ui/button";
 import { getCurrentUser, serverApi } from "@/lib/session";
 
@@ -60,17 +59,6 @@ export default async function DisastrousReviewsPage() {
               </Button>
             </div>
           )}
-
-          <section
-            aria-labelledby="grille"
-            className="frame-gilded rounded-xl border bg-card/70 p-5"
-          >
-            <h2 id="grille" className="font-serif text-xl font-semibold">
-              Grille de notation
-            </h2>
-            <p className="mt-1 mb-4 text-sm text-muted-foreground">Total : 100 points.</p>
-            <CriteriaGrid />
-          </section>
         </aside>
       </div>
     </PageContainer>

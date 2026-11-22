@@ -16,7 +16,7 @@ export default async function FriendsPage() {
   const initial = (await serverApi<FriendsOverview>("/friends")) ?? empty;
 
   return (
-    <PageContainer className="space-y-8">
+    <PageContainer className="max-w-[90rem] space-y-8">
       <PageHeader
         eyebrow="Communauté"
         title="Amis"

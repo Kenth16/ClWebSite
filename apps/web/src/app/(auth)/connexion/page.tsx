@@ -14,8 +14,8 @@ export default async function LoginPage({ searchParams }: Props) {
   return (
     <>
       <div className="mb-6 text-center">
-        <h1 className="text-2xl font-semibold">Bon retour parmi nous</h1>
-        <p className="mt-1 text-muted-foreground">
+        <h1 className="text-3xl font-semibold">Bon retour parmi nous</h1>
+        <p className="mt-1.5 text-muted-foreground">
           Connectez-vous pour reprendre votre progression.
         </p>
       </div>
