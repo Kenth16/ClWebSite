@@ -96,14 +96,14 @@ export const catalog: CatalogEntry[] = [
     title: "Géographie",
     description: "Pays, capitales, drapeaux et départements : parcourez la carte du monde.",
     icon: "geography",
-    status: "in-progress",
+    status: "available",
     children: [
       {
         slug: "pays",
         title: "Pays du monde",
-        description: "Situer et reconnaître les pays de chaque continent.",
+        description: "Situer sur la carte les 193 pays membres de l'ONU.",
         icon: "countries",
-        status: "in-progress",
+        status: "available",
       },
       {
         slug: "capitales",

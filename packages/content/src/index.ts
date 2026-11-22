@@ -5,3 +5,4 @@
  * au code des pages.
  */
 export * from "./catalog";
+export * from "./geography/un-members";
