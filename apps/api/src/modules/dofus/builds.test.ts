@@ -25,6 +25,7 @@ const build = {
   image: null,
   breedId: 9,
   tags: { elements: ["earth", "air"], classes: [9] },
+  specials: { ocre: "safe" },
   exos: { ap: true, mp: false, range: false },
   forgemagic: [
     { stat: "strength", value: 30 },

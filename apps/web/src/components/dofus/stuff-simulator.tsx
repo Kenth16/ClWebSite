@@ -18,6 +18,7 @@ import {
   Sparkles,
   Swords,
   type LucideIcon,
+  Gem,
 } from "lucide-react";
 import {
   CHARACTERISTICS,
@@ -44,6 +45,9 @@ import {
   type Exos,
   type SlotId,
   type StatKey,
+  specialBuffs,
+  specialEffectOf,
+  type SpecialChoices,
 } from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,6 +70,7 @@ import { SavedBuildsDialog } from "./saved-builds";
 import { BuildTagsEditor } from "./tags";
 import { SetPicker } from "./set-picker";
 import { STUFF_STORAGE_KEY } from "./storage";
+import { SpecialEffectDialog, SpecialEffectsPanel } from "./special-effects";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
 // ─── Stuff enregistré dans le navigateur ───────────────────────────────────
@@ -89,6 +94,8 @@ interface Stuff {
   forgemagic: ForgemagicLine[];
   /** Tags (éléments, classes) pour retrouver le stuff. */
   tags: BuildTags;
+  /** Effets spéciaux des Dofus : situation choisie pour chacun. */
+  specials: SpecialChoices;
 }
 
 const STORAGE_KEY = STUFF_STORAGE_KEY;
@@ -107,6 +114,7 @@ const newStuff = (): Stuff => ({
   exos: { ap: false, mp: false, range: false },
   forgemagic: [],
   tags: { elements: [], classes: [] },
+  specials: {},
 });
 
 /** Contenu envoyé à l'API pour enregistrer le stuff. */
@@ -123,6 +131,7 @@ function toBuildData(stuff: Stuff): DofusBuildData {
     exos: stuff.exos,
     forgemagic: stuff.forgemagic,
     tags: stuff.tags,
+    specials: stuff.specials,
   };
 }
 
@@ -166,6 +175,7 @@ const DAMAGE_OTHER: StatKey[] = [
   "spellDamagePct",
   "meleeDamagePct",
   "rangedDamagePct",
+  "finalDamagePct",
 ];
 /** Résistances fixes, puis résistances en %. */
 const RESISTANCE_FIXED: StatKey[] = [
@@ -295,6 +305,8 @@ export function StuffSimulator({
   const [sets, setSets] = React.useState<Record<number, DofusSet>>({});
   const [loadError, setLoadError] = React.useState(false);
   const [picking, setPicking] = React.useState<SlotId | null>(null);
+  /** Effet spécial dont le choix est ouvert (clé de l'effet). */
+  const [asking, setAsking] = React.useState<string | null>(null);
   const requested = React.useRef(new Set<string>());
 
   React.useEffect(() => {
@@ -399,8 +411,23 @@ export function StuffSimulator({
     sets: setIds.map((id) => sets[id]).filter((s): s is DofusSet => !!s),
     exos: stuff.exos,
     forgemagic: stuff.forgemagic,
+    buffs: specialBuffs(
+      equipped.map((e) => e.item),
+      stuff.specials,
+    ),
   });
   const { totals } = result;
+
+  // Effets spéciaux des objets équipés (un par effet, même si l'objet est en double).
+  const specialEntries = [
+    ...new Map(
+      equipped.flatMap(({ item }) => {
+        const effect = specialEffectOf(item);
+        return effect ? [[effect.key, { item, effect }] as const] : [];
+      }),
+    ).values(),
+  ];
+  const askingEntry = specialEntries.find((e) => e.effect.key === asking) ?? null;
 
   // Panoplies représentées dans l'équipement, actives (2 objets ou plus) ou non.
   const setGroups = setIds.flatMap((id) => {
@@ -950,6 +977,15 @@ export function StuffSimulator({
 
         {/* Colonne droite : dommages et résistances */}
         <div className="order-3 space-y-4">
+          {specialEntries.length > 0 && (
+            <Panel title="Effets spéciaux" icon={Gem}>
+              <SpecialEffectsPanel
+                entries={specialEntries}
+                choices={stuff.specials}
+                onEdit={setAsking}
+              />
+            </Panel>
+          )}
           <Panel title="Dommages" icon={Swords}>
             <StatGrid keys={DAMAGE_FIXED} totals={totals} />
             <hr className="my-2 border-border" />
@@ -1032,6 +1068,9 @@ export function StuffSimulator({
             setItems((m) => ({ ...m, [item.id]: item }));
             update({ slots: { ...stuff.slots, [pickingSlot.id]: item.id } });
             setPicking(null);
+            // Objet à effet spécial : on demande tout de suite la situation à simuler.
+            const effect = specialEffectOf(item);
+            if (effect) setAsking(effect.key);
           }}
           onRemove={() => {
             const slots = { ...stuff.slots };
@@ -1039,6 +1078,19 @@ export function StuffSimulator({
             update({ slots });
             setPicking(null);
           }}
+        />
+      )}
+      {askingEntry && (
+        <SpecialEffectDialog
+          key={askingEntry.effect.key}
+          item={askingEntry.item}
+          effect={askingEntry.effect}
+          value={stuff.specials[askingEntry.effect.key]}
+          onChoose={(choiceId) => {
+            update({ specials: { ...stuff.specials, [askingEntry.effect.key]: choiceId } });
+            setAsking(null);
+          }}
+          onClose={() => setAsking(null)}
         />
       )}
     </div>

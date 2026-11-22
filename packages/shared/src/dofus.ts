@@ -1,5 +1,6 @@
 import type { CriteriaTree } from "./dofus-criteria";
 import { z } from "zod";
+import { specialChoicesSchema } from "./dofus-special";
 
 /**
  * Simulateur d'équipement Dofus : caractéristiques, emplacements et calcul
@@ -44,6 +45,8 @@ export const STATS = {
   spellDamagePct: "% Do Sorts",
   meleeDamagePct: "% Do Mêlée",
   rangedDamagePct: "% Do Distance",
+  /** Multiplicateur appliqué en dernier (effets de Dofus : Nébuleux, Vulbis…). */
+  finalDamagePct: "% Dommages finaux",
   neutralRes: "Ré Neutre",
   earthRes: "Ré Terre",
   fireRes: "Ré Feu",
@@ -403,6 +406,8 @@ export interface CharacterInput {
   exos?: Partial<Exos>;
   /** Caractéristiques ajoutées librement par forgemagie. */
   forgemagic?: ForgemagicLine[];
+  /** Bonus de combat (effets spéciaux choisis) : ajoutés après les plafonds de PA/PM/PO. */
+  buffs?: Partial<Record<StatKey, number>>;
 }
 
 /** Coût en points de caractéristique pour atteindre `value` dans une caractéristique. */
@@ -504,6 +509,8 @@ export function computeCharacter(input: CharacterInput): CharacterResult {
     if (input.exos?.[k]) totals[k] += 1;
     totals[k] = Math.min(totals[k], STAT_CAPS[k]);
   }
+  // Bonus de combat : un PA gagné en combat (Dofus Ocre…) dépasse la limite de 12.
+  for (const [k, v] of Object.entries(input.buffs ?? {}) as [StatKey, number][]) totals[k] += v;
 
   const pointsSpent = CHARACTERISTICS.reduce(
     (sum, c) => sum + characteristicCost(c, input.base[c] ?? 0),
@@ -657,6 +664,8 @@ export const dofusBuildSchema = z.object({
     .default([]),
   /** Tags choisis par le joueur pour retrouver ses stuffs. */
   tags: buildTagsSchema,
+  /** Effets spéciaux des Dofus : situation choisie pour chacun (voir dofus-special). */
+  specials: specialChoicesSchema,
   /** Classe choisie pour le calcul des dégâts (identifiant DofusDB), ou null. */
   breedId: z.number().int().positive().nullable().default(null),
   /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */
@@ -805,7 +814,11 @@ export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): Spell
     const stat = Math.max(0, totals[element.stat]) + totals.power;
     const fixed = totals.damage + totals[element.damage] + (critical ? totals.criticalDamage : 0);
     const base = Math.floor((roll * (100 + stat)) / 100) + fixed;
-    return Math.max(0, Math.floor((base * finalPct) / 100));
+    const dealt = Math.max(0, Math.floor((base * finalPct) / 100));
+    // Dommages finaux : appliqués en dernier, sur le résultat.
+    return totals.finalDamagePct
+      ? Math.max(0, Math.floor((dealt * (100 + totals.finalDamagePct)) / 100))
+      : dealt;
   };
 
   const lines: LineDamage[] = grade.lines.map((line, i) => {
