@@ -11,7 +11,6 @@ import {
   Dumbbell,
   Heart,
   Layers,
-  NotebookPen,
   RotateCcw,
   ScrollText,
   Shield,
@@ -63,7 +62,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ItemIcon, ItemPicker } from "./item-picker";
-import { CharacterImage } from "./character-image";
 import { DamageCalculator } from "./damage-calculator";
 import { Forgemagic } from "./forgemagic";
 import { SavedBuildsDialog } from "./saved-builds";
@@ -99,7 +97,6 @@ interface Stuff {
 }
 
 const STORAGE_KEY = STUFF_STORAGE_KEY;
-const NOTES_MAX = 255;
 const zeros = () =>
   Object.fromEntries(CHARACTERISTICS.map((c) => [c, 0])) as Record<Characteristic, number>;
 const newStuff = (): Stuff => ({
@@ -222,34 +219,60 @@ function Panel({
   );
 }
 
-function StatGrid({ keys, totals }: { keys: StatKey[]; totals: Record<StatKey, number> }) {
+function StatGrid({
+  keys,
+  totals,
+  plus,
+}: {
+  keys: StatKey[];
+  totals: Record<StatKey, number>;
+  /** Valeur ajoutée à l'affichage de certaines lignes (ex. Dommages dans chaque Do élémentaire). */
+  plus?: { stat: StatKey; to: readonly StatKey[] };
+}) {
   return (
     <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[0.82rem]">
-      {keys.map((k) => (
-        <div
-          key={k}
-          title={`${STATS[k]} : ${totals[k]}`}
-          className={cn(
-            "flex min-w-0 items-center gap-1.5 rounded-md px-1 py-1",
-            totals[k] !== 0 && "bg-muted/50",
-          )}
-        >
-          <StatIcon stat={k} />
-          <dd
+      {keys.map((k) => {
+        const added = plus && plus.to.includes(k) ? totals[plus.stat] : 0;
+        const value = totals[k] + added;
+        return (
+          <div
+            key={k}
+            title={
+              added
+                ? `${STATS[k]} : ${value} (${totals[k]} + ${added} ${STATS[plus!.stat]})`
+                : `${STATS[k]} : ${value}`
+            }
             className={cn(
-              "min-w-7 shrink-0 text-right font-semibold tabular-nums",
-              totals[k] < 0 && "text-destructive",
-              totals[k] === 0 && "text-muted-foreground",
+              "flex min-w-0 items-center gap-1.5 rounded-md px-1 py-1",
+              value !== 0 && "bg-muted/50",
             )}
           >
-            {totals[k]}
-          </dd>
-          <dt className={cn("truncate", totals[k] === 0 && "text-muted-foreground")}>{STATS[k]}</dt>
-        </div>
-      ))}
+            <StatIcon stat={k} />
+            <dd
+              className={cn(
+                "min-w-7 shrink-0 text-right font-semibold tabular-nums",
+                value < 0 && "text-destructive",
+                value === 0 && "text-muted-foreground",
+              )}
+            >
+              {value}
+            </dd>
+            <dt className={cn("truncate", value === 0 && "text-muted-foreground")}>{STATS[k]}</dt>
+          </div>
+        );
+      })}
     </dl>
   );
 }
+
+/** Dommages élémentaires : affichés avec les Dommages (qui s'appliquent à tous les éléments). */
+const ELEMENT_DAMAGE: StatKey[] = [
+  "neutralDamage",
+  "earthDamage",
+  "fireDamage",
+  "waterDamage",
+  "airDamage",
+];
 
 /** Champ numérique sans les flèches d'incrément du navigateur. */
 const NO_SPIN =
@@ -277,7 +300,7 @@ function NumberCell({
       onChange={(e) =>
         onChange(Math.min(max, Math.max(0, Math.floor(Number(e.target.value)) || 0)))
       }
-      className={cn("h-8 w-14 px-2 text-right tabular-nums", NO_SPIN)}
+      className={cn("h-7 w-14 px-2 text-right tabular-nums", NO_SPIN)}
     />
   );
 }
@@ -700,7 +723,7 @@ export function StuffSimulator({
         Largeur mesurée sur la zone elle-même (requête de conteneur).
       */}
       <div className="@container">
-        <div className="grid gap-4 @min-[64rem]:grid-cols-[18rem_minmax(0,1fr)_18rem] @min-[92rem]:grid-cols-[18rem_minmax(0,1fr)_37rem]">
+        <div className="grid gap-4 @min-[64rem]:grid-cols-[18rem_minmax(0,1fr)_18rem] @min-[85rem]:grid-cols-[17rem_minmax(0,1fr)_34rem]">
           {/* Colonne gauche : caractéristiques */}
           <div className="order-2 space-y-4 @min-[64rem]:order-1">
             <Panel title="Résumé" icon={ScrollText}>
@@ -730,7 +753,7 @@ export function StuffSimulator({
                             : `Ajouter un exo ${STATS[k]} (+1)`
                       }
                       className={cn(
-                        "relative flex flex-col items-center rounded-lg border py-2 transition-colors",
+                        "relative flex flex-col items-center rounded-lg border py-1.5 transition-colors",
                         exo
                           ? "border-gold bg-gold-soft text-gold shadow-[inset_0_0_0_1px_var(--gold)]"
                           : "bg-background/50 hover:border-gold/60 hover:bg-accent",
@@ -738,20 +761,23 @@ export function StuffSimulator({
                       )}
                     >
                       {exo && (
-                        <span className="absolute top-1 right-1.5 text-[0.6rem] font-bold">
+                        <span className="absolute top-0.5 right-1 text-[0.5rem] leading-none font-bold">
                           EXO
                         </span>
                       )}
-                      <StatIcon
-                        stat={k}
-                        className={cn(
-                          "size-5",
-                          k !== "range" && "fill-current",
-                          exo && "text-gold",
-                        )}
-                      />
-                      <span className="mt-0.5 font-serif text-xl font-bold tabular-nums">
-                        {totals[k]}
+                      {/* Icône et valeur sur une ligne, libellé dessous : deux lignes au lieu de trois. */}
+                      <span className="flex items-center gap-1.5">
+                        <StatIcon
+                          stat={k}
+                          className={cn(
+                            "size-4",
+                            k !== "range" && "fill-current",
+                            exo && "text-gold",
+                          )}
+                        />
+                        <span className="font-serif text-lg leading-none font-bold tabular-nums">
+                          {totals[k]}
+                        </span>
                       </span>
                       <span className={cn("text-xs", exo ? "text-gold" : "text-muted-foreground")}>
                         {STATS[k]}
@@ -787,7 +813,7 @@ export function StuffSimulator({
                 <tbody>
                   {CHARACTERISTICS.map((c) => (
                     <tr key={c}>
-                      <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone(c))}>
+                      <td className={cn("py-px pr-2 font-semibold tabular-nums", statTone(c))}>
                         {ELEMENTAL.includes(c) ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -807,13 +833,13 @@ export function StuffSimulator({
                           totals[c]
                         )}
                       </td>
-                      <td className="py-0.5 pr-1">
+                      <td className="py-px pr-1">
                         <span className="flex min-w-0 items-center gap-1.5">
                           <StatIcon stat={c} />
                           <span className="truncate">{STATS[c]}</span>
                         </span>
                       </td>
-                      <td className="py-0.5 pr-1">
+                      <td className="py-px pr-1">
                         <NumberCell
                           label={`${STATS[c]} : points de base`}
                           value={stuff.base[c]}
@@ -821,7 +847,7 @@ export function StuffSimulator({
                           onChange={(n) => update({ base: { ...stuff.base, [c]: n } })}
                         />
                       </td>
-                      <td className="py-0.5">
+                      <td className="py-px">
                         <NumberCell
                           label={`${STATS[c]} : parchemins`}
                           value={stuff.scrolls[c]}
@@ -832,16 +858,16 @@ export function StuffSimulator({
                     </tr>
                   ))}
                   <tr>
-                    <td className={cn("py-0.5 pr-2 font-semibold tabular-nums", statTone("power"))}>
+                    <td className={cn("py-px pr-2 font-semibold tabular-nums", statTone("power"))}>
                       {totals.power}
                     </td>
-                    <td className="py-0.5" colSpan={2}>
+                    <td className="py-px" colSpan={2}>
                       <span className="flex items-center gap-1.5">
                         <StatIcon stat="power" />
                         {STATS.power}
                       </span>
                     </td>
-                    <td className="py-0.5">
+                    <td className="py-px">
                       <div
                         className="flex w-14 gap-1"
                         role="group"
@@ -884,7 +910,7 @@ export function StuffSimulator({
           <div className="order-1 space-y-4 @min-[64rem]:order-2">
             <section
               aria-label="Équipement"
-              className="frame-gilded bg-sky mx-auto w-full rounded-2xl border p-4 @min-[64rem]:max-w-[80%]"
+              className="frame-gilded bg-sky mx-auto w-full max-w-[31.5rem] rounded-2xl border p-4"
             >
               {/* Grille de 6 colonnes égales : tous les emplacements ont la même taille. */}
               <div className="grid grid-cols-6 gap-2.5">
@@ -899,11 +925,6 @@ export function StuffSimulator({
                     <p className="font-display truncate text-center text-base tracking-wide">
                       {stuff.name || "Sans nom"}
                     </p>
-                    <CharacterImage
-                      image={stuff.image}
-                      onChange={(image) => update({ image })}
-                      className="my-1"
-                    />
                     <p className="text-center text-muted-foreground">
                       Niveau {level} · {equipped.length} / {SLOTS.length} objets
                     </p>
@@ -996,28 +1017,17 @@ export function StuffSimulator({
                 )}
               </div>
             </section>
-
-            <Panel title="Notes" icon={NotebookPen}>
-              <textarea
-                value={stuff.notes}
-                maxLength={NOTES_MAX}
-                rows={3}
-                onChange={(e) => update({ notes: e.target.value })}
-                placeholder="Quelques notes ou informations sur ce stuff…"
-                aria-label="Notes sur le stuff"
-                className="w-full rounded-md border border-input bg-background/60 px-3 py-2 text-base outline-none placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25"
-              />
-              <p className="text-right text-xs text-muted-foreground">
-                {stuff.notes.length} / {NOTES_MAX}
-              </p>
-            </Panel>
           </div>
 
           {/* Colonnes droites : dommages et résistances, puis effets spéciaux et forgemagie */}
-          <div className="order-3 grid content-start items-start gap-4 @min-[92rem]:grid-cols-2">
+          <div className="order-3 grid content-start items-start gap-4 @min-[85rem]:grid-cols-2">
             <div className="space-y-4">
               <Panel title="Dommages" icon={Swords}>
-                <StatGrid keys={DAMAGE_FIXED} totals={totals} />
+                <StatGrid
+                  keys={DAMAGE_FIXED}
+                  totals={totals}
+                  plus={{ stat: "damage", to: ELEMENT_DAMAGE }}
+                />
                 <hr className="my-2 border-border" />
                 <StatGrid keys={DAMAGE_OTHER} totals={totals} />
               </Panel>
@@ -1053,42 +1063,44 @@ export function StuffSimulator({
       {/* Panoplies : sur toute la largeur, sous les trois colonnes. */}
       {setGroups.length > 0 && (
         <Panel title="Panoplies" icon={Layers}>
-          <ul className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {setGroups.map(({ set, items: setItems, active }) => (
               <li
                 key={set.id}
                 className={cn(
-                  "rounded-lg border p-3",
+                  "rounded-lg border px-2.5 py-2",
                   active ? "border-gold/40 bg-gold-soft/60" : "bg-background/40",
                 )}
               >
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex -space-x-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex shrink-0 -space-x-1.5">
                     {setItems.map((item) => (
                       <span
                         key={item.id}
                         title={item.name}
-                        className="flex size-10 items-center justify-center rounded-full border border-gold/40 bg-card"
+                        className="flex size-7 items-center justify-center rounded-full border border-gold/40 bg-card"
                       >
-                        <ItemIcon item={item} className="size-8" />
+                        <ItemIcon item={item} className="size-5" />
                       </span>
                     ))}
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-medium">{set.name}</p>
+                  <div className="min-w-0 flex-1 leading-tight">
+                    <p className="truncate text-sm font-medium" title={set.name}>
+                      {set.name}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {setItems.length} / {set.itemIds.length} objets équipés
                     </p>
                   </div>
                 </div>
                 {active ? (
-                  <ul className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-3">
+                  <ul className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
                     {active.effects.map((e, i) => (
-                      <EffectRow key={i} effect={e} />
+                      <EffectRow key={i} effect={e} className="min-w-0" />
                     ))}
                   </ul>
                 ) : (
-                  <p className="mt-2 text-xs text-muted-foreground">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Équipez un objet de plus pour activer les bonus.
                   </p>
                 )}
