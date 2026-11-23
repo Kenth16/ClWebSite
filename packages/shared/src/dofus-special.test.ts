@@ -106,6 +106,9 @@ describe("équipements légendaires", () => {
     expect(specialBuffs([{ id: 20360 }], { ganymede: "even" })).toEqual({ ap: 2 });
     expect(specialBuffs([{ id: 20362 }], { jahash: "fire3" })).toEqual({ fireResPct: 12 });
     expect(specialBuffs([{ id: 32121 }], { meriana: "ap2" })).toEqual({ apReduction: 10 });
+    expect(specialBuffs([{ id: 32117 }], { thanatena: "aura" })).toEqual({ finalDamagePct: 4 });
+    expect(specialBuffs([{ id: 32117 }], { thanatena: "kill-only" })).toEqual({ finalDamagePct: 10 });
+    expect(specialBuffs([{ id: 32117 }], { thanatena: "kill" })).toEqual({ finalDamagePct: 14 });
     // Sans effet sur les caractéristiques : reconnu, mais aucun choix.
     expect(specialEffectOf({ id: 20353 })?.choices).toEqual([]);
   });

@@ -559,12 +559,17 @@ export const SPECIAL_EFFECTS: readonly SpecialEffect[] = [
     choices: [
       {
         id: "aura",
-        label: "Début de tour : +4 % de dégâts subis par la cible",
+        label: "Début de tour seulement : +4 % de dégâts subis par la cible",
         stats: { finalDamagePct: 4 },
       },
       {
+        id: "kill-only",
+        label: "Ennemi achevé seulement : +10 % de dommages finaux",
+        stats: { finalDamagePct: 10 },
+      },
+      {
         id: "kill",
-        label: "Et un ennemi achevé : +14 % au total",
+        label: "Les deux : +14 % au total",
         stats: { finalDamagePct: 14 },
       },
     ],
