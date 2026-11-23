@@ -2,7 +2,14 @@
 
 import * as React from "react";
 import { Check, Layers, Loader2, Search } from "lucide-react";
-import type { DofusItem, DofusSet, DofusSetSummary } from "@kenpai/shared";
+import {
+  STATS,
+  activeSetBonuses,
+  type DofusItem,
+  type DofusSet,
+  type DofusSetSummary,
+  type StatKey,
+} from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,6 +22,70 @@ import { Input } from "@/components/ui/input";
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ItemIcon } from "./item-picker";
+import { StatIcon } from "./stat-icon";
+
+/**
+ * Statistiques apportées par les objets cochés : leurs effets plus le bonus de
+ * panoplie correspondant au nombre d'objets cochés.
+ */
+function SelectionStats({ set, items }: { set: DofusSet; items: DofusItem[] }) {
+  const fromItems: Partial<Record<StatKey, number>> = {};
+  const fromSet: Partial<Record<StatKey, number>> = {};
+  for (const item of items) {
+    for (const e of item.effects)
+      if (e.stat) fromItems[e.stat] = (fromItems[e.stat] ?? 0) + e.value;
+  }
+  const bonus = activeSetBonuses(
+    items.map((i) => ({ ...i, set: i.set ?? { id: set.id, name: set.name } })),
+    [set],
+  )[0];
+  for (const e of bonus?.effects ?? [])
+    if (e.stat) fromSet[e.stat] = (fromSet[e.stat] ?? 0) + e.value;
+
+  // Dans l'ordre habituel des caractéristiques.
+  const keys = (Object.keys(STATS) as StatKey[]).filter(
+    (k) => (fromItems[k] ?? 0) + (fromSet[k] ?? 0) !== 0,
+  );
+  if (keys.length === 0) return null;
+  return (
+    <div className="grid gap-1.5 rounded-md border bg-background/40 p-2.5">
+      <p className="flex flex-wrap items-baseline justify-between gap-x-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Ce que la sélection apporte</span>
+        <span>
+          {bonus
+            ? `bonus de panoplie à ${bonus.count} objets compris`
+            : "pas de bonus de panoplie (2 objets au moins)"}
+        </span>
+      </p>
+      <ul className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs sm:grid-cols-3">
+        {keys.map((k) => {
+          const total = (fromItems[k] ?? 0) + (fromSet[k] ?? 0);
+          const part = fromSet[k] ?? 0;
+          return (
+            <li
+              key={k}
+              className="flex min-w-0 items-center gap-1.5"
+              title={
+                part ? `${STATS[k]} : ${fromItems[k] ?? 0} (objets) + ${part} (panoplie)` : STATS[k]
+              }
+            >
+              <StatIcon stat={k} className="size-3.5" />
+              <span className={cn("font-semibold tabular-nums", total < 0 && "text-destructive")}>
+                {total > 0 ? `+${total}` : total}
+              </span>
+              <span className="truncate">{STATS[k]}</span>
+              {part !== 0 && (
+                <span className="shrink-0 text-[0.65rem] text-gold tabular-nums">
+                  ({part > 0 ? `+${part}` : part} pano)
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
 
 /**
  * « Ajouter une panoplie » : rechercher une panoplie, cocher les objets voulus
@@ -249,6 +320,10 @@ export function SetPicker({
                 <Button disabled={selected.size === 0} onClick={equip}>
                   Équiper {selected.size} objet{selected.size > 1 ? "s" : ""}
                 </Button>
+                <SelectionStats
+                  set={chosen.set}
+                  items={chosen.items.filter((i) => selected.has(i.id))}
+                />
                 <p className="text-xs text-muted-foreground">
                   Les emplacements libres sont remplis en premier ; sinon l&apos;objet en place est
                   remplacé.
