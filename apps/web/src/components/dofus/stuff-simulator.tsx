@@ -44,7 +44,12 @@ import {
   type Exos,
   type SlotId,
   type StatKey,
+  ELEMENTS,
+  WEAPON_FORGE_ELEMENTS,
   canBeLegendary,
+  canForgeWeaponElement,
+  forgeWeaponElement,
+  type WeaponForgeElement,
   legendaryBuffs,
   legendaryPower,
   specialBuffs,
@@ -99,6 +104,8 @@ interface Stuff {
   specials: SpecialChoices;
   /** Pouvoir légendaire du familier ou montilier (clé), ou null. */
   legendary: string | null;
+  /** Élément forgemagé sur la ligne neutre de l'arme, ou null. */
+  weaponElement: WeaponForgeElement | null;
 }
 
 const STORAGE_KEY = STUFF_STORAGE_KEY;
@@ -118,6 +125,7 @@ const newStuff = (): Stuff => ({
   tags: { elements: [], classes: [] },
   specials: {},
   legendary: null,
+  weaponElement: null,
 });
 
 /** Additionne des bonus de combat. */
@@ -145,6 +153,7 @@ function toBuildData(stuff: Stuff): DofusBuildData {
     tags: stuff.tags,
     specials: stuff.specials,
     legendary: stuff.legendary,
+    weaponElement: stuff.weaponElement,
   };
 }
 
@@ -449,6 +458,13 @@ export function StuffSimulator({
   const petItem = equipped.find((e) => e.slot.id === "pet")?.item ?? null;
   const legendPower = petItem && canBeLegendary(petItem) ? legendaryPower(stuff.legendary) : null;
   const legend = petItem && legendPower ? { item: petItem, power: legendPower } : null;
+  // Arme équipée, avec l'élément forgemagé sur sa ligne neutre.
+  const weaponItem = equipped.find((e) => e.slot.id === "weapon")?.item ?? null;
+  const forgeable = canForgeWeaponElement(weaponItem?.weapon);
+  const forgedWeapon =
+    weaponItem?.weapon && forgeable
+      ? { ...weaponItem, weapon: forgeWeaponElement(weaponItem.weapon, stuff.weaponElement) }
+      : weaponItem;
   const result = computeCharacter({
     level,
     base: stuff.base,
@@ -987,7 +1003,7 @@ export function StuffSimulator({
                         breedId={stuff.breedId}
                         onBreedChange={(breedId) => update({ breedId })}
                         elementTags={stuff.tags.elements}
-                        weapon={equipped.find((e) => e.slot.id === "weapon")?.item ?? null}
+                        weapon={forgedWeapon}
                       />
                       <div className="mt-1.5">
                         <SetPicker
@@ -1122,8 +1138,8 @@ export function StuffSimulator({
           </div>
 
           {/* Colonnes droites : dommages et résistances, puis effets spéciaux et forgemagie */}
-          <div className="order-3 grid content-start items-start gap-4 @min-[85rem]:grid-cols-2">
-            <div className="space-y-4">
+          <div className="order-3 grid min-w-0 grid-cols-1 content-start items-start gap-4 @min-[85rem]:grid-cols-2">
+            <div className="min-w-0 space-y-4">
               <Panel title="Dommages" icon={Swords}>
                 <StatGrid
                   keys={DAMAGE_FIXED}
@@ -1139,7 +1155,7 @@ export function StuffSimulator({
                 <StatGrid keys={RESISTANCE_PCT} totals={totals} />
               </Panel>
             </div>
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               {effectEntries.length > 0 && (
                 <Panel title="Effets spéciaux" icon={Gem}>
                   <SpecialEffectsPanel
@@ -1150,6 +1166,38 @@ export function StuffSimulator({
                 </Panel>
               )}
               <Panel title="Forgemagie" icon={Hammer}>
+                {forgeable && weaponItem && (
+                  <fieldset className="mb-3">
+                    <legend className="mb-1.5 text-sm font-medium">
+                      Élément de l&apos;arme{" "}
+                      <span className="font-normal text-muted-foreground">(ligne neutre)</span>
+                    </legend>
+                    <div className="flex flex-wrap gap-1">
+                      {([null, ...WEAPON_FORGE_ELEMENTS] as const).map((el) => {
+                        const on = (stuff.weaponElement ?? null) === el;
+                        const element = ELEMENTS[el ?? "neutral"];
+                        return (
+                          <button
+                            key={el ?? "neutral"}
+                            type="button"
+                            aria-pressed={on}
+                            title={`Ligne neutre de ${weaponItem.name} en ${element.label}`}
+                            onClick={() => update({ weaponElement: el })}
+                            className={cn(
+                              "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors hover:bg-accent",
+                              on
+                                ? "border-primary bg-primary/10 font-semibold"
+                                : "bg-card/60 text-muted-foreground",
+                            )}
+                          >
+                            <StatIcon stat={element.damage} className="size-3.5" />
+                            {element.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                )}
                 <Forgemagic
                   exos={stuff.exos}
                   onToggleExo={toggleExo}

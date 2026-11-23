@@ -27,6 +27,7 @@ const build = {
   tags: { elements: ["earth", "air"], classes: [9] },
   specials: { ocre: "safe", "leg-bwork": "contact" },
   legendary: "leg-bwork",
+  weaponElement: "fire",
   exos: { ap: true, mp: false, range: false },
   forgemagic: [
     { stat: "strength", value: 30 },

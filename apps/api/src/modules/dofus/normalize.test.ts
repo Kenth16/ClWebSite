@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { STATS, computeSpellDamage, weaponGrade, type StatTotals } from "@kenpai/shared";
+import {
+  STATS,
+  canForgeWeaponElement,
+  computeSpellDamage,
+  forgeWeaponElement,
+  weaponGrade,
+  type StatTotals,
+} from "@kenpai/shared";
 import { normalizeItem, type RawItem } from "./normalize";
 
 const effect = (name: string, min: number, max: number, active = true) => ({
@@ -66,5 +73,22 @@ describe("armes (corps à corps)", () => {
       min: 45,
       max: 60,
     });
+  });
+});
+
+describe("forgemagie de l'élément de l'arme", () => {
+  it("change seulement la première ligne, et seulement si elle est neutre", () => {
+    const hit = normalizeItem({
+      ...sword,
+      effects: [effect("dommages Neutre", 20, 30), effect("dommages Neutre", 5, 6)],
+    }).weapon!;
+    expect(canForgeWeaponElement(hit)).toBe(true);
+    const forged = forgeWeaponElement(hit, "air");
+    expect(forged.lines.map((l) => l.element)).toEqual(["air", "neutral"]);
+    expect(forgeWeaponElement(hit, null)).toBe(hit);
+
+    const fire = normalizeItem(sword).weapon!; // première ligne : Feu
+    expect(canForgeWeaponElement(fire)).toBe(false);
+    expect(forgeWeaponElement(fire, "water")).toBe(fire);
   });
 });

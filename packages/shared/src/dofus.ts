@@ -206,6 +206,22 @@ export interface WeaponHit {
   lines: SpellDamageLine[];
 }
 
+/** Éléments possibles d'une arme forgemagée (sa ligne neutre change d'élément). */
+export const WEAPON_FORGE_ELEMENTS = ["earth", "fire", "water", "air"] as const;
+export type WeaponForgeElement = (typeof WEAPON_FORGE_ELEMENTS)[number];
+
+/** La première ligne de l'arme est-elle neutre (donc forgemageable en élément) ? */
+export function canForgeWeaponElement(hit: WeaponHit | null | undefined): boolean {
+  const first = hit?.lines[0];
+  return !!first && first.element === "neutral" && !first.pick;
+}
+
+/** Coup de l'arme après forgemagie : la première ligne neutre passe dans l'élément choisi. */
+export function forgeWeaponElement(hit: WeaponHit, element: WeaponForgeElement | null): WeaponHit {
+  if (!element || !canForgeWeaponElement(hit)) return hit;
+  return { ...hit, lines: hit.lines.map((l, i) => (i === 0 ? { ...l, element } : l)) };
+}
+
 /**
  * Le coup d'une arme vu comme un grade de sort : mêmes calculs, mais avec le
  * % Do Armes au lieu du % Do Sorts, et le bonus critique ajouté aux jets.
@@ -707,6 +723,8 @@ export const dofusBuildSchema = z.object({
   specials: specialChoicesSchema,
   /** Pouvoir légendaire du familier ou montilier équipé (clé), ou null. */
   legendary: z.string().max(40).nullable().default(null),
+  /** Élément forgemagé sur la ligne neutre de l'arme, ou null (neutre). */
+  weaponElement: z.enum(WEAPON_FORGE_ELEMENTS).nullable().default(null),
   /** Classe choisie pour le calcul des dégâts (identifiant DofusDB), ou null. */
   breedId: z.number().int().positive().nullable().default(null),
   /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */

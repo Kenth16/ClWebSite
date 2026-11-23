@@ -107,18 +107,19 @@ export function SpecialEffectsPanel({
   onEdit: (effectKey: string) => void;
 }) {
   return (
-    <ul className="grid gap-2">
+    // grid-cols-1 = minmax(0, 1fr) : les cartes ne dépassent jamais du cadre.
+    <ul className="grid grid-cols-1 gap-2">
       {entries.map(({ item, effect }) => {
         const choice = specialChoice(effect, choices);
         return (
           <li
             key={effect.key}
             className={cn(
-              "flex items-center gap-2.5 rounded-lg border p-2",
+              "flex min-w-0 items-center gap-2 rounded-lg border p-2",
               choice ? "border-gold/50 bg-gold-soft" : "bg-background/40",
             )}
           >
-            <ItemIcon item={item} className="size-9 shrink-0" />
+            <ItemIcon item={item} className="size-8 shrink-0" />
             <div className="min-w-0 flex-1 leading-tight">
               <p className="truncate text-sm font-medium">{effect.spell}</p>
               <p
@@ -130,7 +131,12 @@ export function SpecialEffectsPanel({
                 {choice ? choice.label : "Rien (bonus non compté)"}
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => onEdit(effect.key)}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() => onEdit(effect.key)}
+            >
               Changer
             </Button>
           </li>
