@@ -18,6 +18,7 @@ import {
   conditionsMet,
   conditionsText,
   spellGradeAt,
+  withoutPickedLines,
   type Characteristic,
   type DofusBreed,
   type DofusElement,
@@ -245,7 +246,8 @@ export function StuffOptimizer() {
   }, [breedId, classSpells]);
 
   const damageSpells = (breedId !== null ? (classSpells[breedId] ?? null) : null)?.filter((s) => {
-    const grade = spellGradeAt(s, level);
+    const found = spellGradeAt(s, level);
+    const grade = found ? withoutPickedLines(found) : null;
     return grade && grade.lines.length > 0;
   });
   const selected = new Set(spellIds);
@@ -279,7 +281,11 @@ export function StuffOptimizer() {
     setCells([]);
     const chosenSpells = (damageSpells ?? []).filter((s) => selected.has(s.id));
     setRunSpells(
-      chosenSpells.map((spell) => ({ spell, grade: spellGradeAt(spell, level)!, limit: 1 })),
+      chosenSpells.map((spell) => ({
+        spell,
+        grade: withoutPickedLines(spellGradeAt(spell, level)!),
+        limit: 1,
+      })),
     );
     setRunOptions({ attack, critical: critical === "yes", ap });
     const minimums: Minimums = {
@@ -447,7 +453,7 @@ export function StuffOptimizer() {
           ) : (
             <ul className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {damageSpells.map((s) => {
-                const grade = spellGradeAt(s, level)!;
+                const grade = withoutPickedLines(spellGradeAt(s, level)!);
                 const on = selected.has(s.id);
                 const elements = [...new Set(grade.lines.map((l) => l.element))] as DofusElement[];
                 return (

@@ -14,6 +14,7 @@ import {
   rotationDamage,
   simplifyCriteria,
   spellGradeAt,
+  withoutPickedLines,
   type Characteristic,
   type DofusBreed,
   type OptimizeRequest,
@@ -190,7 +191,9 @@ export class OptimizeJobs {
     const spells: TurnSpell[] = [];
     for (const spell of classSpells) {
       if (!request.spellIds.includes(spell.id)) continue;
-      const grade = spellGradeAt(spell, level);
+      // Lignes « meilleur / pire élément » : pas encore gérées par la preuve.
+      const found = spellGradeAt(spell, level);
+      const grade = found ? withoutPickedLines(found) : null;
       if (grade && grade.lines.length > 0) spells.push({ spell, grade, limit: 1 });
     }
     if (spells.length === 0) {

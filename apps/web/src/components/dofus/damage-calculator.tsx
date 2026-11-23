@@ -1,11 +1,20 @@
 "use client";
 
 import * as React from "react";
-import { Calculator, Crosshair, Hand, Loader2, Star, Swords } from "lucide-react";
+import {
+  ArrowDownWideNarrow,
+  Calculator,
+  Crosshair,
+  Hand,
+  Loader2,
+  RotateCcw,
+  Star,
+  Swords,
+  UserRound,
+} from "lucide-react";
 import {
   BUILD_ELEMENT_TAGS,
   ELEMENTS,
-  STATS,
   computeSpellDamage,
   spellGradeAt,
   spellMatchesElements,
@@ -14,7 +23,7 @@ import {
   type BuildElementTag,
   type DofusElement,
   type DofusSpell,
-  type StatKey,
+  type SpellGrade,
   type StatTotals,
 } from "@kenpai/shared";
 import { Button } from "@/components/ui/button";
@@ -30,23 +39,35 @@ import { cn } from "@/lib/utils";
 import { StatIcon, statTone } from "./stat-icon";
 import { ElementTagPicker, RemoteIcon, useBreeds } from "./tags";
 
-const KEY_STATS: StatKey[] = [
-  "power",
-  "strength",
-  "intelligence",
-  "chance",
-  "agility",
-  "damage",
-  "criticalDamage",
-  "critical",
-  "spellDamagePct",
-  "meleeDamagePct",
-  "rangedDamagePct",
-];
-
 /** Filtre du calcul : sans « Multi » (aucun élément coché = tous les éléments). */
 const FILTER_TAGS = BUILD_ELEMENT_TAGS.filter((t) => t !== "multi");
 const ALL_ELEMENTS = Object.keys(ELEMENTS) as DofusElement[];
+
+/** Type d'attaque imposé au calcul : selon la portée du sort, ou forcé. */
+type Attack = "auto" | "ranged" | "melee";
+type SortKey = "base" | "computed" | "perAp";
+
+const SORTS: { id: SortKey; label: string; help: string }[] = [
+  { id: "base", label: "Dégâts de base", help: "Jets du sort, sans aucune caractéristique" },
+  { id: "computed", label: "Dégâts calculés", help: "Moyenne avec ce stuff, critiques compris" },
+  { id: "perAp", label: "Dégâts par PA", help: "Dégâts calculés divisés par le coût en PA" },
+];
+
+/** Grade utilisé pour le calcul : portée 1 en mêlée, 2 au moins à distance. */
+function gradeFor(grade: SpellGrade, attack: Attack): SpellGrade {
+  if (attack === "melee") return { ...grade, minRange: Math.min(grade.minRange, 1), range: 1 };
+  if (attack === "ranged") return { ...grade, range: Math.max(2, grade.range) };
+  return grade;
+}
+
+/** Valeurs de tri d'un sort (null : pas de dégâts à ce niveau). */
+function spellValues(spell: DofusSpell, level: number, totals: StatTotals, attack: Attack) {
+  const grade = spellGradeAt(spell, level);
+  if (!grade || grade.lines.length === 0) return null;
+  const base = grade.lines.reduce((sum, l) => sum + (l.min + l.max) / 2, 0);
+  const computed = computeSpellDamage(totals, gradeFor(grade, attack)).average;
+  return { base, computed, perAp: grade.apCost > 0 ? computed / grade.apCost : computed };
+}
 
 const fmtRange = (r: { min: number; max: number }) =>
   r.min === r.max ? String(r.min) : `${r.min} – ${r.max}`;
@@ -55,14 +76,20 @@ function SpellCard({
   spell,
   level,
   totals,
+  attack,
+  sortBy,
 }: {
   spell: DofusSpell;
   level: number;
   totals: StatTotals;
+  attack: Attack;
+  sortBy: SortKey | null;
 }) {
   const grade = spellGradeAt(spell, level);
   const firstLevel = spell.grades[0]?.minLevel ?? 1;
-  const damage = grade && grade.lines.length > 0 ? computeSpellDamage(totals, grade) : null;
+  const damage =
+    grade && grade.lines.length > 0 ? computeSpellDamage(totals, gradeFor(grade, attack)) : null;
+  const values = spellValues(spell, level, totals, attack);
 
   const range = grade
     ? grade.minRange === grade.range
@@ -97,9 +124,33 @@ function SpellCard({
           )}
         </div>
         {damage && (
-          <p className="shrink-0 text-right leading-none" title="Dégâts moyens par lancer">
-            <span className="font-serif text-lg font-bold tabular-nums">{damage.average}</span>
-            <span className="block text-[0.65rem] text-muted-foreground">moy.</span>
+          <p className="shrink-0 text-right leading-none">
+            {/* Valeur du tri choisi en gros ; la moyenne reste rappelée dessous. */}
+            {sortBy === "base" && values ? (
+              <span title="Dégâts de base (jets du sort, sans caractéristique)">
+                <span className="font-serif text-lg font-bold tabular-nums">
+                  {Math.round(values.base)}
+                </span>
+                <span className="block text-[0.65rem] text-muted-foreground">base</span>
+              </span>
+            ) : sortBy === "perAp" && values ? (
+              <span title="Dégâts calculés divisés par le coût en PA">
+                <span className="font-serif text-lg font-bold tabular-nums">
+                  {Math.round(values.perAp)}
+                </span>
+                <span className="block text-[0.65rem] text-muted-foreground">par PA</span>
+              </span>
+            ) : (
+              <span title="Dégâts moyens par lancer">
+                <span className="font-serif text-lg font-bold tabular-nums">{damage.average}</span>
+                <span className="block text-[0.65rem] text-muted-foreground">moy.</span>
+              </span>
+            )}
+            {(sortBy === "base" || sortBy === "perAp") && (
+              <span className="mt-0.5 block text-[0.65rem] text-muted-foreground tabular-nums">
+                moy. {damage.average}
+              </span>
+            )}
           </p>
         )}
       </div>
@@ -126,6 +177,18 @@ function SpellCard({
                       </span>
                       {line.kind === "steal" && (
                         <span className="text-xs text-muted-foreground">(vol)</span>
+                      )}
+                      {line.pick && (
+                        <span
+                          className="rounded border border-gold/40 bg-gold-soft px-1 text-[0.65rem] text-gold"
+                          title={
+                            line.pick === "best"
+                              ? "Frappe dans l'élément qui fait le plus de dégâts avec ce stuff"
+                              : "Frappe dans l'élément qui fait le moins de dégâts avec ce stuff"
+                          }
+                        >
+                          {line.pick === "best" ? "meilleur élément" : "pire élément"}
+                        </span>
                       )}
                     </span>
                   </td>
@@ -180,6 +243,15 @@ export function DamageCalculator({
   const [error, setError] = React.useState<string | null>(null);
   const [onlyDamage, setOnlyDamage] = React.useState(true);
   const [showTurns, setShowTurns] = React.useState(false);
+  const [attack, setAttack] = React.useState<Attack>("auto");
+  const [sortBy, setSortBy] = React.useState<SortKey | null>(null);
+  const [pickingClass, setPickingClass] = React.useState(false);
+  const filtered = elements.length > 0 || attack !== "auto" || sortBy !== null;
+  const resetFilters = () => {
+    setElements([]);
+    setAttack("auto");
+    setSortBy(null);
+  };
 
   React.useEffect(() => {
     if (!open || breedId === null || spells[breedId]) return;
@@ -189,17 +261,35 @@ export function DamageCalculator({
   }, [open, breedId, spells]);
 
   const list = breedId !== null ? spells[breedId] : undefined;
-  const shown = list?.filter(
+  const matching = list?.filter(
     (s) =>
       (!onlyDamage || s.grades.some((g) => g.lines.length > 0)) &&
       spellMatchesElements(s, elements),
   );
+  // Tri décroissant sur la valeur choisie ; les sorts sans dégâts restent à la fin.
+  const shown =
+    matching && sortBy
+      ? [...matching]
+          .map((spell) => ({ spell, v: spellValues(spell, level, totals, attack)?.[sortBy] ?? -1 }))
+          .sort((a, b) => b.v - a.v)
+          .map((x) => x.spell)
+      : matching;
   const breed = breeds?.find((b) => b.id === breedId);
   const ap = Math.max(0, totals.ap);
   const turns = React.useMemo(
     () =>
-      showTurns && shown ? topCombos(totals, turnSpells(shown, level, ALL_ELEMENTS, ap), ap, 4) : null,
-    [showTurns, shown, totals, level, ap],
+      showTurns && shown
+        ? topCombos(
+            totals,
+            turnSpells(shown, level, ALL_ELEMENTS, ap).map((t) => ({
+              ...t,
+              grade: gradeFor(t.grade, attack),
+            })),
+            ap,
+            4,
+          )
+        : null,
+    [showTurns, shown, totals, level, ap, attack],
   );
 
   return (
@@ -229,57 +319,119 @@ export function DamageCalculator({
           <p className="text-sm text-destructive">{error ?? breedsError}</p>
         )}
 
-        {/* Choix de la classe */}
-        {breeds === null && !breedsError ? (
-          <p className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            Chargement des classes…
-          </p>
-        ) : (
-          <fieldset>
-            <legend className="mb-2 text-sm font-medium">Classe</legend>
-            <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-7 lg:grid-cols-10">
-              {breeds?.map((b) => (
+        {/* Classe : un bouton, la liste s'ouvre dans un popup et se ferme au choix. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Dialog open={pickingClass} onOpenChange={setPickingClass}>
+            <DialogTrigger asChild>
+              <Button variant="outline" disabled={breeds === null && !breedsError}>
+                {breed ? (
+                  <RemoteIcon src={breed.icon} className="size-5" />
+                ) : breeds === null ? (
+                  <Loader2 className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <UserRound aria-hidden="true" />
+                )}
+                {breed ? breed.name : "Choisir sa classe"}
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl gap-4">
+              <DialogTitle>Choisir sa classe</DialogTitle>
+              <DialogDescription className="sr-only">
+                Les sorts de la classe choisie s&apos;afficheront.
+              </DialogDescription>
+              <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-6 lg:grid-cols-8">
+                {breeds?.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => {
+                      onBreedChange(b.id);
+                      setPickingClass(false);
+                    }}
+                    aria-pressed={b.id === breedId}
+                    className={cn(
+                      "flex flex-col items-center gap-1 rounded-lg border p-1.5 text-[0.7rem] transition-colors hover:bg-accent",
+                      b.id === breedId
+                        ? "border-primary bg-primary/10 font-semibold"
+                        : "bg-card/60",
+                    )}
+                  >
+                    <RemoteIcon src={b.icon} className="size-9" />
+                    <span className="w-full truncate text-center">{b.name}</span>
+                  </button>
+                ))}
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        {/* Filtres et tri : éléments, type d'attaque, ordre des sorts */}
+        <div className="grid gap-2 rounded-lg border bg-card/40 p-3">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <ElementTagPicker value={elements} onChange={setElements} tags={FILTER_TAGS} />
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Type d'attaque">
+              {(
+                [
+                  { id: "ranged", label: "Dégâts distance", icon: Crosshair },
+                  { id: "melee", label: "Dégâts mêlée", icon: Hand },
+                ] as const
+              ).map(({ id, label, icon: Icon }) => (
                 <button
-                  key={b.id}
+                  key={id}
                   type="button"
-                  onClick={() => onBreedChange(b.id)}
-                  aria-pressed={b.id === breedId}
+                  aria-pressed={attack === id}
+                  title={
+                    id === "melee"
+                      ? "Tous les sorts calculés avec le % Do Mêlée"
+                      : "Tous les sorts calculés avec le % Do Distance"
+                  }
+                  onClick={() => setAttack((a) => (a === id ? "auto" : id))}
                   className={cn(
-                    "flex flex-col items-center gap-1 rounded-lg border p-1.5 text-[0.7rem] transition-colors hover:bg-accent",
-                    b.id === breedId ? "border-primary bg-primary/10 font-semibold" : "bg-card/60",
+                    "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-sm transition-colors hover:bg-accent",
+                    attack === id
+                      ? "border-primary bg-primary/10 font-semibold"
+                      : "bg-card/60 text-muted-foreground",
                   )}
                 >
-                  <RemoteIcon src={b.icon} className="size-8" />
-                  <span className="w-full truncate text-center">{b.name}</span>
+                  <Icon className="size-3.5" aria-hidden="true" />
+                  {label}
                 </button>
               ))}
             </div>
-          </fieldset>
-        )}
-
-        {/* Caractéristiques prises en compte */}
-        <ul className="flex flex-wrap gap-1.5 text-xs">
-          {KEY_STATS.map((k) => (
-            <li
-              key={k}
-              className={cn(
-                "flex items-center gap-1 rounded-full border bg-background/50 px-2 py-0.5",
-                totals[k] === 0 && "text-muted-foreground",
-              )}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 flex items-center gap-1 text-xs text-muted-foreground">
+              <ArrowDownWideNarrow className="size-3.5" aria-hidden="true" />
+              Trier par
+            </span>
+            {SORTS.map((sort) => (
+              <button
+                key={sort.id}
+                type="button"
+                aria-pressed={sortBy === sort.id}
+                title={sort.help}
+                onClick={() => setSortBy((v) => (v === sort.id ? null : sort.id))}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-sm transition-colors hover:bg-accent",
+                  sortBy === sort.id
+                    ? "border-gold/60 bg-gold-soft font-semibold text-gold"
+                    : "bg-card/60 text-muted-foreground",
+                )}
+              >
+                {sort.label}
+              </button>
+            ))}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
+              disabled={!filtered}
+              onClick={resetFilters}
+              title="Retirer tous les filtres et le tri"
             >
-              <StatIcon stat={k} className="size-3" />
-              <span className="font-semibold tabular-nums">{totals[k]}</span>
-              {STATS[k]}
-            </li>
-          ))}
-        </ul>
-
-        {/* Filtre par élément */}
-        <fieldset>
-          <legend className="mb-2 text-sm font-medium">Éléments</legend>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <ElementTagPicker value={elements} onChange={setElements} tags={FILTER_TAGS} />
+              <RotateCcw aria-hidden="true" />
+              Réinitialiser
+            </Button>
             <Button
               variant={showTurns ? "default" : "outline"}
               size="sm"
@@ -291,7 +443,7 @@ export function DamageCalculator({
               Meilleurs tours
             </Button>
           </div>
-        </fieldset>
+        </div>
 
         {showTurns && breedId !== null && (
           <section aria-label="Meilleurs tours" className="rounded-lg border bg-card/50 p-3">
@@ -311,7 +463,10 @@ export function DamageCalculator({
             ) : (
               <ol className="grid gap-2 md:grid-cols-2">
                 {turns.map((turn, i) => (
-                  <li key={i} className="flex items-center gap-3 rounded-md border bg-background/60 p-2">
+                  <li
+                    key={i}
+                    className="flex items-center gap-3 rounded-md border bg-background/60 p-2"
+                  >
                     <span className="w-5 shrink-0 text-center font-serif text-sm font-bold text-muted-foreground">
                       {i + 1}
                     </span>
@@ -329,7 +484,9 @@ export function DamageCalculator({
                       ))}
                     </ul>
                     <p className="shrink-0 text-right leading-none">
-                      <span className="font-serif text-lg font-bold tabular-nums">{turn.damage}</span>
+                      <span className="font-serif text-lg font-bold tabular-nums">
+                        {turn.damage}
+                      </span>
                       <span className="block text-[0.65rem] text-muted-foreground">
                         {turn.apUsed}/{ap} PA
                       </span>
@@ -344,7 +501,8 @@ export function DamageCalculator({
         <div className="-mx-2 max-h-[55svh] min-h-40 overflow-y-auto px-2">
           {breedId === null ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
-              Choisissez une classe pour voir les dégâts de ses sorts.
+              Choisissez une classe (bouton « Choisir sa classe ») pour voir les dégâts de ses
+              sorts.
             </p>
           ) : !shown ? (
             <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
@@ -358,7 +516,14 @@ export function DamageCalculator({
           ) : (
             <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {shown.map((spell) => (
-                <SpellCard key={spell.id} spell={spell} level={level} totals={totals} />
+                <SpellCard
+                  key={spell.id}
+                  spell={spell}
+                  level={level}
+                  totals={totals}
+                  attack={attack}
+                  sortBy={sortBy}
+                />
               ))}
             </ul>
           )}

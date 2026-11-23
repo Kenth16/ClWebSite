@@ -727,7 +727,7 @@ export function StuffSimulator({
           {/* Colonne gauche : caractéristiques */}
           <div className="order-2 space-y-4 @min-[64rem]:order-1">
             <Panel title="Résumé" icon={ScrollText}>
-              <div className="mb-3 flex items-center gap-3 rounded-lg bg-el-life/10 px-3 py-2">
+              <div className="mb-3 flex items-center gap-3 rounded-lg bg-el-life/10 px-3 py-[5px]">
                 <Heart className="size-7 fill-el-life text-el-life" aria-hidden="true" />
                 <p className="leading-tight">
                   <span className="font-serif text-2xl font-bold tabular-nums">{result.hp}</span>
@@ -1017,6 +1017,55 @@ export function StuffSimulator({
                 )}
               </div>
             </section>
+            {/* Panoplies : sous l'équipement, dans la colonne du centre. */}
+            {setGroups.length > 0 && (
+              <Panel title="Panoplies" icon={Layers} className="@container">
+                <ul className="grid gap-2 @min-[30rem]:grid-cols-2">
+                  {setGroups.map(({ set, items: setItems, active }) => (
+                    <li
+                      key={set.id}
+                      className={cn(
+                        "rounded-lg border px-2.5 py-2",
+                        active ? "border-gold/40 bg-gold-soft/60" : "bg-background/40",
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="flex shrink-0 -space-x-1.5">
+                          {setItems.map((item) => (
+                            <span
+                              key={item.id}
+                              title={item.name}
+                              className="flex size-7 items-center justify-center rounded-full border border-gold/40 bg-card"
+                            >
+                              <ItemIcon item={item} className="size-5" />
+                            </span>
+                          ))}
+                        </div>
+                        <div className="min-w-0 flex-1 leading-tight">
+                          <p className="truncate text-sm font-medium" title={set.name}>
+                            {set.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {setItems.length} / {set.itemIds.length} objets équipés
+                          </p>
+                        </div>
+                      </div>
+                      {active ? (
+                        <ul className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
+                          {active.effects.map((e, i) => (
+                            <EffectRow key={i} effect={e} className="min-w-0" />
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Équipez un objet de plus pour activer les bonus.
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </Panel>
+            )}
           </div>
 
           {/* Colonnes droites : dommages et résistances, puis effets spéciaux et forgemagie */}
@@ -1059,56 +1108,6 @@ export function StuffSimulator({
           </div>
         </div>
       </div>
-
-      {/* Panoplies : sur toute la largeur, sous les trois colonnes. */}
-      {setGroups.length > 0 && (
-        <Panel title="Panoplies" icon={Layers}>
-          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {setGroups.map(({ set, items: setItems, active }) => (
-              <li
-                key={set.id}
-                className={cn(
-                  "rounded-lg border px-2.5 py-2",
-                  active ? "border-gold/40 bg-gold-soft/60" : "bg-background/40",
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  <div className="flex shrink-0 -space-x-1.5">
-                    {setItems.map((item) => (
-                      <span
-                        key={item.id}
-                        title={item.name}
-                        className="flex size-7 items-center justify-center rounded-full border border-gold/40 bg-card"
-                      >
-                        <ItemIcon item={item} className="size-5" />
-                      </span>
-                    ))}
-                  </div>
-                  <div className="min-w-0 flex-1 leading-tight">
-                    <p className="truncate text-sm font-medium" title={set.name}>
-                      {set.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {setItems.length} / {set.itemIds.length} objets équipés
-                    </p>
-                  </div>
-                </div>
-                {active ? (
-                  <ul className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
-                    {active.effects.map((e, i) => (
-                      <EffectRow key={i} effect={e} className="min-w-0" />
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Équipez un objet de plus pour activer les bonus.
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      )}
 
       {pickingSlot && (
         <ItemPicker

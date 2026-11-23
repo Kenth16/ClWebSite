@@ -2,6 +2,7 @@ import type {
   DofusBreed,
   DofusElement,
   DofusSpell,
+  ElementPick,
   SpellDamageLine,
   SpellGrade,
 } from "@kenpai/shared";
@@ -12,7 +13,10 @@ const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const PAGE = 50;
 
 /** Effets de dégâts DofusDB (effectId) → élément et type. */
-const DAMAGE_EFFECTS: Record<number, { element: DofusElement; kind: SpellDamageLine["kind"] }> = {
+const DAMAGE_EFFECTS: Record<
+  number,
+  { element: DofusElement; kind: SpellDamageLine["kind"]; pick?: ElementPick }
+> = {
   96: { element: "water", kind: "damage" },
   97: { element: "earth", kind: "damage" },
   98: { element: "air", kind: "damage" },
@@ -23,6 +27,11 @@ const DAMAGE_EFFECTS: Record<number, { element: DofusElement; kind: SpellDamageL
   93: { element: "air", kind: "steal" },
   94: { element: "fire", kind: "steal" },
   95: { element: "neutral", kind: "steal" },
+  // Meilleur / pire élément : l'élément est choisi au calcul (« neutral » en attendant).
+  2822: { element: "neutral", kind: "damage", pick: "best" },
+  2828: { element: "neutral", kind: "steal", pick: "best" },
+  2832: { element: "neutral", kind: "damage", pick: "worst" },
+  2890: { element: "neutral", kind: "steal", pick: "worst" },
 };
 
 interface RawEffect {

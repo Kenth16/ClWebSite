@@ -4,6 +4,8 @@ import {
   buildMatchesTags,
   placeItems,
   spellMatchesElements,
+  spellElements,
+  STATS,
   toggleElementTag,
   availablePoints,
   characteristicCost,
@@ -347,5 +349,50 @@ describe("ajout d'une panoplie", () => {
       ring1: 2,
       ring2: 8,
     });
+  });
+});
+
+describe("meilleur et pire élément", () => {
+  const zero = () =>
+    Object.fromEntries(Object.keys(STATS).map((k) => [k, 0])) as Record<keyof typeof STATS, number>;
+  const grade = (pick: "best" | "worst") => ({
+    grade: 1,
+    minLevel: 1,
+    apCost: 4,
+    minRange: 1,
+    range: 5,
+    criticalChance: 0,
+    lines: [{ element: "neutral" as const, kind: "damage" as const, min: 100, max: 100, pick }],
+    criticalLines: [],
+  });
+
+  it("frappe dans l'élément qui fait le plus de dégâts", () => {
+    const totals = { ...zero(), strength: 100, intelligence: 300, fireDamage: 10 };
+    const r = computeSpellDamage(totals, grade("best"));
+    expect(r.lines[0]!.element).toBe("fire");
+    expect(r.average).toBe(410);
+  });
+
+  it("tient compte des dommages fixes de l'élément, pas seulement de la caractéristique", () => {
+    // Agilité un peu plus basse, mais beaucoup plus de Do Air : l'Air l'emporte.
+    const totals = { ...zero(), chance: 200, agility: 180, airDamage: 100 };
+    expect(computeSpellDamage(totals, grade("best")).lines[0]!.element).toBe("air");
+  });
+
+  it("le pire élément prend celui qui fait le moins de dégâts", () => {
+    const totals = { ...zero(), strength: 100, intelligence: 300, chance: 50, agility: 200 };
+    expect(computeSpellDamage(totals, grade("worst")).lines[0]!.element).toBe("water");
+  });
+
+  it("un sort au meilleur élément passe tous les filtres d'éléments", () => {
+    const spell = {
+      id: 1,
+      name: "Charge",
+      icon: null,
+      variant: 1,
+      grades: [grade("best")],
+    };
+    expect(spellMatchesElements(spell, ["water"])).toBe(true);
+    expect(spellElements(spell)).toEqual([]);
   });
 });

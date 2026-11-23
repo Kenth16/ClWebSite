@@ -728,6 +728,31 @@ export interface SpellDamageLine {
   kind: "damage" | "steal";
   min: number;
   max: number;
+  /**
+   * Élément choisi au lancer : le meilleur (celui qui fait le plus de dégâts) ou
+   * le pire. `element` n'est alors qu'une valeur d'attente.
+   */
+  pick?: ElementPick;
+}
+
+export type ElementPick = "best" | "worst";
+
+/** Éléments possibles d'une ligne « meilleur / pire élément ». */
+export const PICKABLE_ELEMENTS = [
+  "earth",
+  "fire",
+  "water",
+  "air",
+] as const satisfies readonly DofusElement[];
+
+/** Le grade sans ses lignes « meilleur / pire élément » (non gérées par l'optimiseur). */
+export function withoutPickedLines(grade: SpellGrade): SpellGrade {
+  if (!grade.lines.some((l) => l.pick)) return grade;
+  return {
+    ...grade,
+    lines: grade.lines.filter((l) => !l.pick),
+    criticalLines: grade.criticalLines.filter((l) => !l.pick),
+  };
 }
 
 export interface SpellGrade {
@@ -756,7 +781,9 @@ export interface DofusSpell {
 
 /** Éléments de dégâts distincts d'un sort (tous grades confondus). */
 export function spellElements(spell: DofusSpell): DofusElement[] {
-  return [...new Set(spell.grades.flatMap((g) => g.lines.map((l) => l.element)))];
+  return [
+    ...new Set(spell.grades.flatMap((g) => g.lines.filter((l) => !l.pick).map((l) => l.element))),
+  ];
 }
 
 /**
@@ -768,6 +795,8 @@ export function spellMatchesElements(
   filter: readonly BuildElementTag[],
 ): boolean {
   if (filter.length === 0) return true;
+  // Un sort qui frappe dans le meilleur élément s'adapte : il passe tous les filtres.
+  if (spell.grades.some((g) => g.lines.some((l) => l.pick))) return true;
   const elements = spellElements(spell);
   if (filter.includes("multi")) return elements.length > 1;
   return elements.some((e) => (filter as readonly string[]).includes(e));
@@ -780,8 +809,10 @@ export function spellGradeAt(spell: DofusSpell, level: number): SpellGrade | nul
 }
 
 export interface LineDamage {
+  /** Élément retenu (pour une ligne « meilleur / pire élément » : celui choisi). */
   element: DofusElement;
   kind: SpellDamageLine["kind"];
+  pick?: ElementPick;
   normal: { min: number; max: number };
   critical: { min: number; max: number } | null;
 }
@@ -821,27 +852,51 @@ export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): Spell
       : dealt;
   };
 
-  const lines: LineDamage[] = grade.lines.map((line, i) => {
-    const critLine =
-      grade.criticalLines.find((c, j) => j === i && c.element === line.element) ??
-      grade.criticalLines.find((c) => c.element === line.element && c.kind === line.kind);
-    return {
-      element: line.element,
-      kind: line.kind,
-      normal: { min: hit(line, line.min, false), max: hit(line, line.max, false) },
-      critical: critLine
-        ? { min: hit(critLine, critLine.min, true), max: hit(critLine, critLine.max, true) }
-        : null,
-    };
-  });
-
   const criticalChance = Math.min(100, Math.max(0, grade.criticalChance + totals.critical));
   const p = criticalChance / 100;
-  const average = lines.reduce((sum, l) => {
+  const expected = (l: LineDamage) => {
     const normal = (l.normal.min + l.normal.max) / 2;
     const crit = l.critical ? (l.critical.min + l.critical.max) / 2 : normal;
-    return sum + (1 - p) * normal + p * crit;
-  }, 0);
+    return (1 - p) * normal + p * crit;
+  };
+
+  /** Dégâts d'une ligne dans un élément donné. */
+  const lineIn = (
+    line: SpellDamageLine,
+    critLine: SpellDamageLine | undefined,
+    element: DofusElement,
+  ): LineDamage => {
+    const l = { ...line, element };
+    const c = critLine ? { ...critLine, element } : undefined;
+    return {
+      element,
+      kind: line.kind,
+      ...(line.pick ? { pick: line.pick } : {}),
+      normal: { min: hit(l, l.min, false), max: hit(l, l.max, false) },
+      critical: c ? { min: hit(c, c.min, true), max: hit(c, c.max, true) } : null,
+    };
+  };
+
+  const lines: LineDamage[] = grade.lines.map((line, i) => {
+    const same = (c: SpellDamageLine) => c.element === line.element && c.pick === line.pick;
+    const critLine =
+      grade.criticalLines.find((c, j) => j === i && same(c)) ??
+      grade.criticalLines.find((c) => same(c) && c.kind === line.kind);
+    if (!line.pick) return lineIn(line, critLine, line.element);
+    // Meilleur (ou pire) élément : celui qui fait le plus (ou le moins) de dégâts.
+    const options = PICKABLE_ELEMENTS.map((e) => lineIn(line, critLine, e));
+    return options.reduce((kept, o) =>
+      line.pick === "best"
+        ? expected(o) > expected(kept)
+          ? o
+          : kept
+        : expected(o) < expected(kept)
+          ? o
+          : kept,
+    );
+  });
+
+  const average = lines.reduce((sum, l) => sum + expected(l), 0);
 
   return { lines, criticalChance, average: Math.round(average), exactAverage: average, melee };
 }
