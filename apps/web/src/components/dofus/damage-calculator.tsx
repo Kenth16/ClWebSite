@@ -21,6 +21,8 @@ import {
   spellMatchesElements,
   topCombos,
   turnSpells,
+  weaponGrade,
+  type DofusItem,
   withoutConditionalLines,
   type BuildElementTag,
   type DofusElement,
@@ -238,6 +240,7 @@ export function DamageCalculator({
   breedId,
   onBreedChange,
   elementTags,
+  weapon = null,
 }: {
   totals: StatTotals;
   level: number;
@@ -245,6 +248,8 @@ export function DamageCalculator({
   onBreedChange: (id: number) => void;
   /** Éléments du stuff : filtre proposé par défaut à l'ouverture. */
   elementTags: BuildElementTag[];
+  /** Arme équipée : son coup (corps à corps) est ajouté aux sorts. */
+  weapon?: DofusItem | null;
 }) {
   const [open, setOpen] = React.useState(false);
   const { breeds, error: breedsError } = useBreeds(open);
@@ -270,7 +275,18 @@ export function DamageCalculator({
       .catch((e: unknown) => setError(e instanceof ApiError ? e.message : "Sorts indisponibles."));
   }, [open, breedId, spells]);
 
-  const list = breedId !== null ? spells[breedId] : undefined;
+  // Le coup de l'arme, présenté comme un sort (identifiant négatif : jamais un vrai sort).
+  const weaponSpell: DofusSpell | null = weapon?.weapon
+    ? {
+        id: -weapon.id,
+        name: `Corps à corps : ${weapon.name}`,
+        icon: weapon.icon,
+        variant: -weapon.id,
+        grades: [weaponGrade(weapon.weapon)],
+      }
+    : null;
+  const classList = breedId !== null ? spells[breedId] : undefined;
+  const list = classList && weaponSpell ? [weaponSpell, ...classList] : classList;
   const matching = list?.filter(
     (s) =>
       (!onlyDamage || s.grades.some((g) => g.lines.length > 0)) &&

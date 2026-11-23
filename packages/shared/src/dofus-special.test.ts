@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { STATS, computeCharacter, computeSpellDamage, type StatTotals } from "./dofus";
-import { SPECIAL_EFFECTS, specialBuffs, specialEffectOf } from "./dofus-special";
+import {
+  LEGENDARY_POWERS,
+  SPECIAL_EFFECTS,
+  canBeLegendary,
+  legendaryBuffs,
+  specialBuffs,
+  specialEffectOf,
+} from "./dofus-special";
 import { isAllowedItem } from "./dofus-optimizer";
 
 const zeros = () =>
@@ -63,5 +70,32 @@ describe("effets spéciaux des Dofus", () => {
     expect(computeSpellDamage(totals, grade).average).toBe(100);
     expect(computeSpellDamage({ ...totals, finalDamagePct: 20 }, grade).average).toBe(120);
     expect(computeSpellDamage({ ...totals, finalDamagePct: -10 }, grade).average).toBe(90);
+  });
+});
+
+describe("pouvoirs légendaires des familiers", () => {
+  it("couvre les 32 croquettes infusées, clés et choix uniques", () => {
+    expect(LEGENDARY_POWERS).toHaveLength(32);
+    expect(new Set(LEGENDARY_POWERS.map((p) => p.key)).size).toBe(32);
+    expect(new Set(LEGENDARY_POWERS.map((p) => p.spellId)).size).toBe(32);
+    for (const p of LEGENDARY_POWERS) {
+      const ids = p.choices.map((c) => c.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const c of p.choices)
+        for (const k of Object.keys(c.stats)) expect(k in STATS).toBe(true);
+    }
+  });
+
+  it("applique le bonus de la situation choisie", () => {
+    expect(legendaryBuffs("leg-bwork", { "leg-bwork": "contact" })).toEqual({ rangedDamagePct: 3 });
+    expect(legendaryBuffs("leg-mulou", { "leg-mulou": "x3" })).toEqual({ finalDamagePct: 15 });
+    expect(legendaryBuffs("leg-mulou", {})).toEqual({});
+    expect(legendaryBuffs(null, {})).toEqual({});
+  });
+
+  it("seuls les familiers et montiliers peuvent être légendaires", () => {
+    expect(canBeLegendary({ type: "Familier" })).toBe(true);
+    expect(canBeLegendary({ type: "Montilier" })).toBe(true);
+    expect(canBeLegendary({ type: "Dragodinde" })).toBe(false);
   });
 });

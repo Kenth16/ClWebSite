@@ -44,6 +44,9 @@ import {
   type Exos,
   type SlotId,
   type StatKey,
+  canBeLegendary,
+  legendaryBuffs,
+  legendaryPower,
   specialBuffs,
   specialEffectOf,
   type SpecialChoices,
@@ -68,7 +71,7 @@ import { SavedBuildsDialog } from "./saved-builds";
 import { BuildTagsEditor } from "./tags";
 import { SetPicker } from "./set-picker";
 import { STUFF_STORAGE_KEY } from "./storage";
-import { SpecialEffectDialog, SpecialEffectsPanel } from "./special-effects";
+import { LegendaryPowerDialog, SpecialEffectDialog, SpecialEffectsPanel } from "./special-effects";
 import { EffectRow, StatIcon, statTone } from "./stat-icon";
 
 // ─── Stuff enregistré dans le navigateur ───────────────────────────────────
@@ -94,6 +97,8 @@ interface Stuff {
   tags: BuildTags;
   /** Effets spéciaux des Dofus : situation choisie pour chacun. */
   specials: SpecialChoices;
+  /** Pouvoir légendaire du familier ou montilier (clé), ou null. */
+  legendary: string | null;
 }
 
 const STORAGE_KEY = STUFF_STORAGE_KEY;
@@ -112,7 +117,17 @@ const newStuff = (): Stuff => ({
   forgemagic: [],
   tags: { elements: [], classes: [] },
   specials: {},
+  legendary: null,
 });
+
+/** Additionne des bonus de combat. */
+function mergeBuffs(...all: Partial<Record<StatKey, number>>[]): Partial<Record<StatKey, number>> {
+  const out: Partial<Record<StatKey, number>> = {};
+  for (const buffs of all) {
+    for (const [k, v] of Object.entries(buffs) as [StatKey, number][]) out[k] = (out[k] ?? 0) + v;
+  }
+  return out;
+}
 
 /** Contenu envoyé à l'API pour enregistrer le stuff. */
 function toBuildData(stuff: Stuff): DofusBuildData {
@@ -129,6 +144,7 @@ function toBuildData(stuff: Stuff): DofusBuildData {
     forgemagic: stuff.forgemagic,
     tags: stuff.tags,
     specials: stuff.specials,
+    legendary: stuff.legendary,
   };
 }
 
@@ -331,6 +347,8 @@ export function StuffSimulator({
   const [picking, setPicking] = React.useState<SlotId | null>(null);
   /** Effet spécial dont le choix est ouvert (clé de l'effet). */
   const [asking, setAsking] = React.useState<string | null>(null);
+  /** Choix du pouvoir légendaire ouvert. */
+  const [pickingLegend, setPickingLegend] = React.useState(false);
   const requested = React.useRef(new Set<string>());
 
   React.useEffect(() => {
@@ -427,6 +445,10 @@ export function StuffSimulator({
     const item = id !== undefined ? items[id] : undefined;
     return item ? [{ slot, item }] : [];
   });
+  // Pouvoir légendaire : seulement si un familier ou montilier est équipé.
+  const petItem = equipped.find((e) => e.slot.id === "pet")?.item ?? null;
+  const legendPower = petItem && canBeLegendary(petItem) ? legendaryPower(stuff.legendary) : null;
+  const legend = petItem && legendPower ? { item: petItem, power: legendPower } : null;
   const result = computeCharacter({
     level,
     base: stuff.base,
@@ -435,9 +457,12 @@ export function StuffSimulator({
     sets: setIds.map((id) => sets[id]).filter((s): s is DofusSet => !!s),
     exos: stuff.exos,
     forgemagic: stuff.forgemagic,
-    buffs: specialBuffs(
-      equipped.map((e) => e.item),
-      stuff.specials,
+    buffs: mergeBuffs(
+      specialBuffs(
+        equipped.map((e) => e.item),
+        stuff.specials,
+      ),
+      legend ? legendaryBuffs(legend.power.key, stuff.specials) : {},
     ),
   });
   const { totals } = result;
@@ -451,7 +476,11 @@ export function StuffSimulator({
       }),
     ).values(),
   ];
-  const askingEntry = specialEntries.find((e) => e.effect.key === asking) ?? null;
+  const effectEntries = [
+    ...specialEntries,
+    ...(legend ? [{ item: legend.item, effect: legend.power }] : []),
+  ];
+  const askingEntry = effectEntries.find((e) => e.effect.key === asking) ?? null;
 
   // Panoplies représentées dans l'équipement, actives (2 objets ou plus) ou non.
   const setGroups = setIds.flatMap((id) => {
@@ -533,7 +562,7 @@ export function StuffSimulator({
     if (!item) return button;
 
     // Au survol (ou au focus clavier) : les statistiques de l'objet.
-    return (
+    const withTooltip = (
       <Tooltip key={slotId}>
         <TooltipTrigger asChild>{button}</TooltipTrigger>
         <TooltipContent
@@ -580,6 +609,29 @@ export function StuffSimulator({
           </p>
         </TooltipContent>
       </Tooltip>
+    );
+    if (slotId !== "pet" || !canBeLegendary(item)) return withTooltip;
+    // Familier ou montilier : petit bouton rond pour choisir une légende animale.
+    return (
+      <div key={slotId} className="relative">
+        {withTooltip}
+        <button
+          type="button"
+          onClick={() => setPickingLegend(true)}
+          aria-label={
+            legend ? `Légende animale : ${legend.power.creature}` : "Ajouter une légende animale"
+          }
+          title={legend ? `Légende animale : ${legend.power.spell}` : "Ajouter une légende animale"}
+          className={cn(
+            "absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border text-[0.7rem] leading-none font-bold shadow-sm transition-colors",
+            legend
+              ? "border-gold bg-gold text-background"
+              : "border-gold/60 bg-card text-gold hover:bg-gold-soft",
+          )}
+        >
+          {legend ? "★" : "+"}
+        </button>
+      </div>
     );
   };
 
@@ -761,7 +813,7 @@ export function StuffSimulator({
                       )}
                     >
                       {exo && (
-                        <span className="absolute top-0.5 right-1 text-[0.5rem] leading-none font-bold">
+                        <span className="absolute top-0.5 right-1.5 text-[0.5rem] leading-none font-bold">
                           EXO
                         </span>
                       )}
@@ -935,6 +987,7 @@ export function StuffSimulator({
                         breedId={stuff.breedId}
                         onBreedChange={(breedId) => update({ breedId })}
                         elementTags={stuff.tags.elements}
+                        weapon={equipped.find((e) => e.slot.id === "weapon")?.item ?? null}
                       />
                       <div className="mt-1.5">
                         <SetPicker
@@ -1087,10 +1140,10 @@ export function StuffSimulator({
               </Panel>
             </div>
             <div className="space-y-4">
-              {specialEntries.length > 0 && (
+              {effectEntries.length > 0 && (
                 <Panel title="Effets spéciaux" icon={Gem}>
                   <SpecialEffectsPanel
-                    entries={specialEntries}
+                    entries={effectEntries}
                     choices={stuff.specials}
                     onEdit={setAsking}
                   />
@@ -1132,6 +1185,19 @@ export function StuffSimulator({
             update({ slots });
             setPicking(null);
           }}
+        />
+      )}
+      {pickingLegend && petItem && (
+        <LegendaryPowerDialog
+          item={petItem}
+          value={stuff.legendary}
+          onChoose={(power) => {
+            update({ legendary: power?.key ?? null });
+            setPickingLegend(false);
+            // Pouvoir à situations : on demande tout de suite laquelle simuler.
+            if (power && power.choices.length > 0) setAsking(power.key);
+          }}
+          onClose={() => setPickingLegend(false)}
         />
       )}
       {askingEntry && (

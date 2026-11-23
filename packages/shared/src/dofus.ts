@@ -188,6 +188,45 @@ export interface DofusItem {
   family?: SlotFamily | null;
   /** Conditions qui dépendent du stuff (caractéristiques, panoplies, classe), si connues. */
   criteria?: CriteriaTree | null;
+  /** Coup de l'arme (corps à corps), pour les armes. */
+  weapon?: WeaponHit | null;
+}
+
+/** Caractéristiques du coup d'une arme. */
+export interface WeaponHit {
+  apCost: number;
+  minRange: number;
+  range: number;
+  /** % de coup critique de base. */
+  criticalChance: number;
+  /** Bonus de dégâts ajouté à chaque jet en coup critique. */
+  criticalBonus: number;
+  /** Coups possibles par tour (null : sans limite). */
+  castsPerTurn: number | null;
+  lines: SpellDamageLine[];
+}
+
+/**
+ * Le coup d'une arme vu comme un grade de sort : mêmes calculs, mais avec le
+ * % Do Armes au lieu du % Do Sorts, et le bonus critique ajouté aux jets.
+ */
+export function weaponGrade(hit: WeaponHit): SpellGrade {
+  return {
+    grade: 1,
+    minLevel: 1,
+    apCost: hit.apCost,
+    minRange: hit.minRange,
+    range: hit.range,
+    criticalChance: hit.criticalChance,
+    maxCastsPerTurn: hit.castsPerTurn,
+    weapon: true,
+    lines: hit.lines,
+    criticalLines: hit.lines.map((l) => ({
+      ...l,
+      min: l.min + hit.criticalBonus,
+      max: l.max + hit.criticalBonus,
+    })),
+  };
 }
 
 /** Panoplie dans une liste de recherche. */
@@ -666,6 +705,8 @@ export const dofusBuildSchema = z.object({
   tags: buildTagsSchema,
   /** Effets spéciaux des Dofus : situation choisie pour chacun (voir dofus-special). */
   specials: specialChoicesSchema,
+  /** Pouvoir légendaire du familier ou montilier équipé (clé), ou null. */
+  legendary: z.string().max(40).nullable().default(null),
   /** Classe choisie pour le calcul des dégâts (identifiant DofusDB), ou null. */
   breedId: z.number().int().positive().nullable().default(null),
   /** Image du personnage (data URL PNG, JPEG ou WebP), réduite par le navigateur. */
@@ -801,6 +842,8 @@ export interface SpellGrade {
   criticalChance: number;
   /** Lancers possibles par tour sur une même cible (null : pas de limite). */
   maxCastsPerTurn?: number | null;
+  /** Coup d'arme : % Do Armes au lieu de % Do Sorts. */
+  weapon?: boolean;
   lines: SpellDamageLine[];
   criticalLines: SpellDamageLine[];
 }
@@ -874,7 +917,9 @@ export interface SpellDamage {
 export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): SpellDamage {
   const melee = grade.range <= 1;
   const finalPct =
-    100 + totals.spellDamagePct + (melee ? totals.meleeDamagePct : totals.rangedDamagePct);
+    100 +
+    (grade.weapon ? totals.weaponDamagePct : totals.spellDamagePct) +
+    (melee ? totals.meleeDamagePct : totals.rangedDamagePct);
 
   const hit = (line: SpellDamageLine, roll: number, critical: boolean) => {
     const element = ELEMENTS[line.element];

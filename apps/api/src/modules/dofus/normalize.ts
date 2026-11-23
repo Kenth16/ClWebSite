@@ -1,6 +1,9 @@
 import {
   ITEM_TYPE_FAMILY,
   statFromEffectName,
+  type DofusElement,
+  type SpellDamageLine,
+  type WeaponHit,
   type DofusCondition,
   type DofusConditionTree,
   type DofusEffect,
@@ -33,6 +36,12 @@ export interface RawItem {
   effects?: RawEffect[] | null;
   conditions?: RawConditionNode | null;
   parent_set?: { id: number; name: string } | null;
+  is_weapon?: boolean;
+  ap_cost?: number;
+  range?: { min: number; max: number };
+  critical_hit_probability?: number;
+  critical_hit_bonus?: number;
+  max_cast_per_turn?: number;
 }
 
 export interface RawSet {
@@ -93,6 +102,52 @@ function normalizeConditions(node: RawConditionNode | null | undefined): DofusCo
   return { kind: node.relation === "or" ? "or" : "and", children };
 }
 
+const WEAPON_ELEMENTS: Record<string, DofusElement> = {
+  neutre: "neutral",
+  terre: "earth",
+  feu: "fire",
+  eau: "water",
+  air: "air",
+};
+
+/** Ligne de dégâts d'une arme (« dommages Feu », « vol du meilleur élément »…), ou null. */
+function weaponLine(e: RawEffect): SpellDamageLine | null {
+  const m = /^(dommages|vol) (?:du )?(neutre|terre|feu|eau|air|meilleur élément)$/i.exec(
+    e.type.name.trim(),
+  );
+  if (!m) return null;
+  const kind = m[1]!.toLowerCase() === "vol" ? "steal" : "damage";
+  const key = m[2]!.toLowerCase();
+  const min = e.int_minimum;
+  const max = e.int_maximum > 0 ? e.int_maximum : e.int_minimum;
+  const line: SpellDamageLine = {
+    element: WEAPON_ELEMENTS[key] ?? "neutral",
+    kind,
+    min: Math.min(min, max),
+    max: Math.max(min, max),
+  };
+  return key === "meilleur élément" ? { ...line, pick: "best" } : line;
+}
+
+/** Coup de l'arme : coût, portée, critique et lignes de dégâts. */
+function weaponHit(raw: RawItem): WeaponHit | null {
+  if (!raw.is_weapon) return null;
+  const lines = (raw.effects ?? []).flatMap((e) => {
+    const line = e.type.is_active ? weaponLine(e) : null;
+    return line ? [line] : [];
+  });
+  if (lines.length === 0) return null;
+  return {
+    apCost: raw.ap_cost ?? 0,
+    minRange: raw.range?.min ?? 1,
+    range: raw.range?.max ?? 1,
+    criticalChance: raw.critical_hit_probability ?? 0,
+    criticalBonus: raw.critical_hit_bonus ?? 0,
+    castsPerTurn: raw.max_cast_per_turn ? raw.max_cast_per_turn : null,
+    lines,
+  };
+}
+
 export function normalizeItem(raw: RawItem): DofusItem {
   return {
     id: raw.ankama_id,
@@ -107,6 +162,7 @@ export function normalizeItem(raw: RawItem): DofusItem {
     conditions: normalizeConditions(raw.conditions),
     set: raw.parent_set ? { id: raw.parent_set.id, name: raw.parent_set.name } : null,
     family: raw.type.id !== undefined ? (ITEM_TYPE_FAMILY[raw.type.id] ?? null) : null,
+    weapon: weaponHit(raw),
   };
 }
 
