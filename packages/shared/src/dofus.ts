@@ -733,9 +733,29 @@ export interface SpellDamageLine {
    * le pire. `element` n'est alors qu'une valeur d'attente.
    */
   pick?: ElementPick;
+  /**
+   * Dégâts qui ne touchent pas directement la cible au lancer : zone autour
+   * d'elle, état requis, déclenchés plus tard (poison) ou différés. Gardés pour
+   * les sorts qui n'ont aucune autre ligne, afin qu'ils apparaissent.
+   */
+  condition?: LineCondition;
 }
 
 export type ElementPick = "best" | "worst";
+export type LineCondition = "zone" | "conditional" | "triggered" | "delayed";
+
+export const LINE_CONDITION_LABELS: Record<LineCondition, { label: string; help: string }> = {
+  zone: {
+    label: "zone",
+    help: "Touche les ennemis autour de la case ciblée, pas la cible elle-même",
+  },
+  conditional: {
+    label: "sous condition",
+    help: "Ne s'applique que dans un état ou une situation précise",
+  },
+  triggered: { label: "déclenché", help: "S'applique plus tard (début ou fin de tour, poison…)" },
+  delayed: { label: "différé", help: "S'applique quelques tours après le lancer" },
+};
 
 /** Éléments possibles d'une ligne « meilleur / pire élément ». */
 export const PICKABLE_ELEMENTS = [
@@ -745,13 +765,28 @@ export const PICKABLE_ELEMENTS = [
   "air",
 ] as const satisfies readonly DofusElement[];
 
-/** Le grade sans ses lignes « meilleur / pire élément » (non gérées par l'optimiseur). */
+/**
+ * Le grade réduit à ses lignes directes : sans les lignes « meilleur / pire
+ * élément » (non gérées par l'optimiseur) ni les dégâts sous condition.
+ */
 export function withoutPickedLines(grade: SpellGrade): SpellGrade {
-  if (!grade.lines.some((l) => l.pick)) return grade;
+  const keep = (l: SpellDamageLine) => !l.pick && !l.condition;
+  if (grade.lines.every(keep) && grade.criticalLines.every(keep)) return grade;
   return {
     ...grade,
-    lines: grade.lines.filter((l) => !l.pick),
-    criticalLines: grade.criticalLines.filter((l) => !l.pick),
+    lines: grade.lines.filter(keep),
+    criticalLines: grade.criticalLines.filter(keep),
+  };
+}
+
+/** Le grade sans ses dégâts sous condition (zone, état, déclenchés, différés). */
+export function withoutConditionalLines(grade: SpellGrade): SpellGrade {
+  const keep = (l: SpellDamageLine) => !l.condition;
+  if (grade.lines.every(keep) && grade.criticalLines.every(keep)) return grade;
+  return {
+    ...grade,
+    lines: grade.lines.filter(keep),
+    criticalLines: grade.criticalLines.filter(keep),
   };
 }
 
@@ -813,6 +848,7 @@ export interface LineDamage {
   element: DofusElement;
   kind: SpellDamageLine["kind"];
   pick?: ElementPick;
+  condition?: LineCondition;
   normal: { min: number; max: number };
   critical: { min: number; max: number } | null;
 }
@@ -872,6 +908,7 @@ export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): Spell
       element,
       kind: line.kind,
       ...(line.pick ? { pick: line.pick } : {}),
+      ...(line.condition ? { condition: line.condition } : {}),
       normal: { min: hit(l, l.min, false), max: hit(l, l.max, false) },
       critical: c ? { min: hit(c, c.min, true), max: hit(c, c.max, true) } : null,
     };

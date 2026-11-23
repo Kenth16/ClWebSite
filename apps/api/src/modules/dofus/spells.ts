@@ -3,6 +3,7 @@ import type {
   DofusElement,
   DofusSpell,
   ElementPick,
+  LineCondition,
   SpellDamageLine,
   SpellGrade,
 } from "@kenpai/shared";
@@ -65,6 +66,20 @@ export function appliesOnCast(e: RawEffect): boolean {
   if (!tokens.includes("A")) return false;
   return !tokens.some((t) => /^[A-Z]\d+/.test(t));
 }
+/**
+ * Pourquoi un effet de dégâts ne frappe pas directement la cible au lancer, ou
+ * null s'il la frappe. « exclude » : il ne vise pas d'ennemi (allié, lanceur…).
+ */
+function lineCondition(e: RawEffect): LineCondition | "exclude" | null {
+  if (appliesOnCast(e)) return null;
+  const tokens = (e.targetMask ?? "A").split(",").map((t) => t.trim().replace(/^\*/, ""));
+  if (!tokens.includes("A")) return "exclude";
+  if ((e.delay ?? 0) > 0) return "delayed";
+  if (e.triggers && e.triggers !== "I") return "triggered";
+  if (tokens.some((t) => /^[A-Z]\d+/.test(t))) return "conditional";
+  return "zone";
+}
+
 interface RawLevel {
   id: number;
   spellId: number;
@@ -100,13 +115,26 @@ interface Page<T> {
   data: T[];
 }
 
-function damageLines(effects: RawEffect[] | undefined): SpellDamageLine[] {
+/**
+ * Lignes de dégâts d'un effet de sort. Par défaut, seulement celles qui frappent
+ * la cible au lancer ; avec `fallback`, aussi celles sous condition (repérées).
+ */
+function damageLines(effects: RawEffect[] | undefined, fallback = false): SpellDamageLine[] {
   return (effects ?? []).flatMap((e) => {
     const kind = DAMAGE_EFFECTS[e.effectId];
-    if (!kind || !appliesOnCast(e)) return [];
+    if (!kind) return [];
+    const condition = lineCondition(e);
+    if (condition === "exclude" || (condition && !fallback)) return [];
     const min = e.diceNum;
     const max = e.diceSide > 0 ? e.diceSide : e.diceNum;
-    return [{ ...kind, min: Math.min(min, max), max: Math.max(min, max) }];
+    return [
+      {
+        ...kind,
+        min: Math.min(min, max),
+        max: Math.max(min, max),
+        ...(condition ? { condition } : {}),
+      },
+    ];
   });
 }
 
@@ -121,6 +149,9 @@ function castsPerTurn(raw: RawLevel): number | null {
 }
 
 export function normalizeGrade(raw: RawLevel): SpellGrade {
+  // Aucun dégât direct : on garde les dégâts sous condition, repérés, pour que le
+  // sort apparaisse (Anneau Destructeur, poisons, sorts à état…).
+  const fallback = damageLines(raw.effects).length === 0;
   return {
     grade: raw.grade,
     minLevel: raw.minPlayerLevel,
@@ -129,8 +160,8 @@ export function normalizeGrade(raw: RawLevel): SpellGrade {
     range: raw.range,
     criticalChance: raw.criticalHitProbability,
     maxCastsPerTurn: castsPerTurn(raw),
-    lines: damageLines(raw.effects),
-    criticalLines: damageLines(raw.criticalEffect),
+    lines: damageLines(raw.effects, fallback),
+    criticalLines: damageLines(raw.criticalEffect, fallback),
   };
 }
 

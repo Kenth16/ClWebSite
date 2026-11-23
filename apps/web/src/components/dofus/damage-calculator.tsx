@@ -15,11 +15,13 @@ import {
 import {
   BUILD_ELEMENT_TAGS,
   ELEMENTS,
+  LINE_CONDITION_LABELS,
   computeSpellDamage,
   spellGradeAt,
   spellMatchesElements,
   topCombos,
   turnSpells,
+  withoutConditionalLines,
   type BuildElementTag,
   type DofusElement,
   type DofusSpell,
@@ -190,6 +192,14 @@ function SpellCard({
                           {line.pick === "best" ? "meilleur élément" : "pire élément"}
                         </span>
                       )}
+                      {line.condition && (
+                        <span
+                          className="rounded border px-1 text-[0.65rem] text-muted-foreground"
+                          title={LINE_CONDITION_LABELS[line.condition].help}
+                        >
+                          {LINE_CONDITION_LABELS[line.condition].label}
+                        </span>
+                      )}
                     </span>
                   </td>
                   <td className="py-0.5 pl-3">
@@ -283,7 +293,8 @@ export function DamageCalculator({
             totals,
             turnSpells(shown, level, ALL_ELEMENTS, ap).map((t) => ({
               ...t,
-              grade: gradeFor(t.grade, attack),
+              // Seulement les dégâts directs : une zone ou un poison ne touche pas la cible au lancer.
+              grade: gradeFor(withoutConditionalLines(t.grade), attack),
             })),
             ap,
             4,

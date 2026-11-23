@@ -92,4 +92,34 @@ describe("sorts Dofus (DofusDB)", () => {
     );
     expect(normalizeGrade(base).maxCastsPerTurn).toBeNull();
   });
+
+  it("garde les dégâts sous condition seulement si le sort n'a aucun dégât direct", () => {
+    const base = {
+      id: 1,
+      spellId: 1,
+      grade: 1,
+      minPlayerLevel: 1,
+      apCost: 3,
+      minRange: 1,
+      range: 6,
+      criticalHitProbability: 5,
+    };
+    const ring = { effectId: 98, diceNum: 24, diceSide: 28, zoneDescr: { shape: 79 } };
+    const direct = { effectId: 97, diceNum: 10, diceSide: 12, targetMask: "A" };
+    const ally = { effectId: 99, diceNum: 5, diceSide: 6, targetMask: "g" };
+    const poison = { effectId: 99, diceNum: 7, diceSide: 8, triggers: "TB" };
+
+    // Anneau seul (type Anneau Destructeur) : la ligne apparaît, repérée « zone ».
+    expect(normalizeGrade({ ...base, effects: [ring] }).lines).toEqual([
+      { element: "air", kind: "damage", min: 24, max: 28, condition: "zone" },
+    ]);
+    // Avec un dégât direct, la zone est écartée comme avant.
+    expect(normalizeGrade({ ...base, effects: [direct, ring] }).lines).toEqual([
+      { element: "earth", kind: "damage", min: 10, max: 12 },
+    ]);
+    // Poison seul : repéré « déclenché » ; dégâts sur un allié : jamais comptés.
+    expect(normalizeGrade({ ...base, effects: [poison, ally] }).lines).toEqual([
+      { element: "fire", kind: "damage", min: 7, max: 8, condition: "triggered" },
+    ]);
+  });
 });
