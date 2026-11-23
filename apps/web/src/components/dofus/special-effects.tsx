@@ -128,7 +128,11 @@ export function SpecialEffectsPanel({
                   choice ? "font-semibold text-foreground" : "text-muted-foreground",
                 )}
               >
-                {choice ? choice.label : "Rien (bonus non compté)"}
+                {choice
+                  ? choice.label
+                  : effect.choices.length === 0
+                    ? "Sans effet sur les caractéristiques"
+                    : "Rien (bonus non compté)"}
               </p>
             </div>
             <Button
@@ -137,7 +141,7 @@ export function SpecialEffectsPanel({
               className="h-7 shrink-0 px-2 text-xs"
               onClick={() => onEdit(effect.key)}
             >
-              Changer
+              {effect.choices.length === 0 ? "Détails" : "Changer"}
             </Button>
           </li>
         );

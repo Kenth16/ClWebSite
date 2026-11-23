@@ -99,3 +99,21 @@ describe("pouvoirs légendaires des familiers", () => {
     expect(canBeLegendary({ type: "Dragodinde" })).toBe(false);
   });
 });
+
+describe("équipements légendaires", () => {
+  it("sont reconnus par leur identifiant et donnent le bonus choisi", () => {
+    expect(specialEffectOf({ id: 20360 })?.key).toBe("ganymede");
+    expect(specialBuffs([{ id: 20360 }], { ganymede: "even" })).toEqual({ ap: 2 });
+    expect(specialBuffs([{ id: 20362 }], { jahash: "fire3" })).toEqual({ fireResPct: 12 });
+    expect(specialBuffs([{ id: 32121 }], { meriana: "ap2" })).toEqual({ apReduction: 10 });
+    // Sans effet sur les caractéristiques : reconnu, mais aucun choix.
+    expect(specialEffectOf({ id: 20353 })?.choices).toEqual([]);
+  });
+
+  it("chaque objet n'apparaît qu'une fois dans la table", () => {
+    const ids = SPECIAL_EFFECTS.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const keys = SPECIAL_EFFECTS.map((e) => e.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});

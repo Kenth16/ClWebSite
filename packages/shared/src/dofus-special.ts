@@ -47,6 +47,16 @@ const stacks = (
     stats: stats(n),
   }));
 
+const NO_STAT_EFFECT = "Cet effet ne change pas les caractéristiques du simulateur.";
+/** Même % de résistance dans les cinq éléments. */
+const allResPct = (v: number): Partial<Record<StatKey, number>> => ({
+  neutralResPct: v,
+  earthResPct: v,
+  fireResPct: v,
+  waterResPct: v,
+  airResPct: v,
+});
+
 export const SPECIAL_EFFECTS: readonly SpecialEffect[] = [
   // ── Situations exclusives ────────────────────────────────────────────────
   {
@@ -227,6 +237,362 @@ export const SPECIAL_EFFECTS: readonly SpecialEffect[] = [
       8,
       (n) => `+${8 * n} Dommages`,
       (n) => ({ damage: 8 * n }),
+    ),
+  },
+
+  // ── Équipements légendaires ──────────────────────────────────────────────
+  {
+    key: "helsephine",
+    id: 32118,
+    name: "Amour d'Helséphine",
+    spell: "Amour d'Helséphine",
+    summary:
+      "Bouclier appliqué ou dommages en mêlée : soigne les alliés proches de 6 % de leur vie.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "henual",
+    id: 32119,
+    name: "Ponctualité d'Henual",
+    spell: "Ponctualité d'Henual",
+    summary: "Téléporté, se téléporte ou échange de position : +1 PA (1 fois par tour).",
+    question: "Le porteur a-t-il été téléporté ou a-t-il échangé de position ?",
+    choices: [{ id: "tp", label: "Oui : +1 PA", stats: { ap: 1 } }],
+  },
+  {
+    key: "buhorado",
+    id: 20356,
+    name: "Plume de Buhorado",
+    spell: "Plume de Buhorado",
+    summary: "Coup critique : +10 Dommages Poussée pendant 3 tours.",
+    question: "Le porteur a-t-il fait un coup critique ?",
+    choices: [{ id: "crit", label: "Oui : +10 Do Poussée", stats: { pushbackDamage: 10 } }],
+  },
+  {
+    key: "brumaire",
+    id: 20355,
+    name: "Frisson de Brumaire",
+    spell: "Froid de Novamaire",
+    summary: "Ennemi achevé : +1 PA pendant 1 tour (2 cumuls).",
+    question: "Combien d'ennemis achevés ?",
+    choices: stacks(
+      2,
+      (n) => `${n} ennemi${n > 1 ? "s" : ""} achevé${n > 1 ? "s" : ""} : +${n} PA`,
+      (n) => ({ ap: n }),
+    ),
+  },
+  {
+    key: "misere",
+    id: 22444,
+    name: "Balance-Fléau de Misère",
+    spell: "Épreuve de la Balance",
+    summary:
+      "Retrait de PA, PM ou PO subi : vole 2 % de résistances à l'attaquant pendant 2 tours (4 cumuls).",
+    question: "Combien de cumuls ?",
+    choices: stacks(
+      4,
+      (n) => `${n} cumul${n > 1 ? "s" : ""} : +${2 * n} % de résistances`,
+      (n) => allResPct(2 * n),
+    ),
+  },
+  {
+    key: "mille-lieues",
+    id: 20363,
+    name: "Bottes de Mille Lieues",
+    spell: "Mille Lieues",
+    summary: "Tours impairs : +2 PM.",
+    question: "Quel tour simuler ?",
+    choices: [{ id: "odd", label: "Tour impair : +2 PM", stats: { mp: 2 } }],
+  },
+  {
+    key: "cul-botte",
+    id: 20364,
+    name: "Bottes du Cul Botté",
+    spell: "Les Culs Bottés",
+    summary: "Début et fin de tour : repousse de 2 cases les entités au contact.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "meriana",
+    id: 32121,
+    name: "Clairvoyance de Mériana",
+    spell: "Clairvoyance de Mériana",
+    summary:
+      "Dommages élémentaires : +5 Retrait PM (Terre, Eau) ou +5 Retrait PA (Feu, Air) pendant 2 tours (8 cumuls partagés).",
+    question: "Quel retrait, et combien de cumuls ?",
+    choices: [
+      ...stacks(
+        8,
+        (n) => `Terre / Eau ×${n} : +${5 * n} Retrait PM`,
+        (n) => ({ mpReduction: 5 * n }),
+        "mp",
+      ),
+      ...stacks(
+        8,
+        (n) => `Feu / Air ×${n} : +${5 * n} Retrait PA`,
+        (n) => ({ apReduction: 5 * n }),
+        "ap",
+      ),
+    ],
+  },
+  {
+    key: "fallanster",
+    id: 20357,
+    name: "Droiture de Fallanster",
+    spell: "Droiture de Fallanster",
+    summary:
+      "Fin de tour en vue d'un ennemi : glyphe réduisant de 10 % les dommages subis par les alliés.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "trompe-la-mort",
+    id: 20358,
+    name: "Trompe-la-Mort",
+    spell: "Trompe-la-Mort",
+    summary:
+      "Plus de 50 % de vie : +7 % de dommages finaux (perd 10 % de vie par tour). Moins de 50 % : −20 % de dommages subis.",
+    question: "Le porteur a-t-il plus de 50 % de sa vie ?",
+    choices: [
+      { id: "high", label: "Plus de 50 % : +7 % dommages finaux", stats: { finalDamagePct: 7 } },
+    ],
+  },
+  {
+    key: "miroir",
+    id: 32115,
+    name: "Bouclier Miroir",
+    spell: "Reflet Aveuglant",
+    summary: "Renvoie la première attaque alliée subie ; fin de tour : −4 PO aux ennemis en vue.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "dofusteuse",
+    id: 958,
+    name: "Dofusteuse",
+    spell: "Bénédiction des Dofus",
+    summary:
+      "Chaque tour, +400 dans une caractéristique élémentaire (Chance, Force, Agilité, Intelligence, à tour de rôle).",
+    question: "Quel tour simuler ?",
+    choices: [
+      { id: "chance", label: "+400 Chance", stats: { chance: 400 } },
+      { id: "strength", label: "+400 Force", stats: { strength: 400 } },
+      { id: "agility", label: "+400 Agilité", stats: { agility: 400 } },
+      { id: "intelligence", label: "+400 Intelligence", stats: { intelligence: 400 } },
+    ],
+  },
+  {
+    key: "rykke-errel",
+    id: 20361,
+    name: "Bravoure de Rykke Errel",
+    spell: "Bravoure de Rykke Errel",
+    summary:
+      "Attaque à distance subie : bouclier, et −1 % de dommages à distance par case d'éloignement de l'attaquant (11 au plus).",
+    question: "À combien de cases était l'attaquant ?",
+    choices: stacks(
+      11,
+      (n) => `${n} case${n > 1 ? "s" : ""} : −${n} % Do Distance`,
+      (n) => ({ rangedDamagePct: -n }),
+    ),
+  },
+  {
+    key: "jahash",
+    id: 20362,
+    name: "Noblesse de Jahash Jurgen",
+    spell: "Assimilation Élémentaire",
+    summary:
+      "Dommages subis dans un élément : +4 % de résistance dans cet élément pendant 2 tours (5 cumuls partagés).",
+    question: "Quel élément, et combien de cumuls ?",
+    choices: (
+      [
+        ["neutral", "Neutre", "neutralResPct"],
+        ["earth", "Terre", "earthResPct"],
+        ["fire", "Feu", "fireResPct"],
+        ["water", "Eau", "waterResPct"],
+        ["air", "Air", "airResPct"],
+      ] as const
+    ).flatMap(([id, label, stat]) =>
+      stacks(
+        5,
+        (n) => `${label} ×${n} : +${4 * n} % Ré ${label}`,
+        (n) => ({ [stat]: 4 * n }),
+        id,
+      ),
+    ),
+  },
+  {
+    key: "corruption",
+    id: 22412,
+    name: "Pestilence de Corruption",
+    spell: "Nuée Pestilentielle",
+    summary: "Remonte à 90 % de vie : poison de 18 aux ennemis à 2 cases ou moins.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "dodge",
+    id: 20365,
+    name: "Audace de Dodge",
+    spell: "Audace de Dodge",
+    summary:
+      "Début de tour : déplacé (+1 PM et +10 % Critique) ou non déplacé (+40 Fuite et +40 Dommages Poussée).",
+    question: "Le porteur a-t-il été déplacé en début de tour ?",
+    choices: [
+      { id: "moved", label: "Déplacé : +1 PM et +10 % Critique", stats: { mp: 1, critical: 10 } },
+      {
+        id: "still",
+        label: "Pas déplacé : +40 Fuite et +40 Do Poussée",
+        stats: { dodge: 40, pushbackDamage: 40 },
+      },
+    ],
+  },
+  {
+    key: "jhessica",
+    id: 20366,
+    name: "Courage de Dame Jhessica",
+    spell: "Courage de Dame Jhessica",
+    summary:
+      "Fin de tour : −60 Fuite aux ennemis au contact, +1 % de dommages aux sorts par ennemi touché (4 cumuls).",
+    question: "Combien de cumuls ?",
+    choices: stacks(
+      4,
+      (n) => `${n} cumul${n > 1 ? "s" : ""} : +${n} % Do Sorts`,
+      (n) => ({ spellDamagePct: n }),
+    ),
+  },
+  {
+    key: "servitude",
+    id: 22429,
+    name: "Étreinte de Servitude",
+    spell: "Fers de la Tyrannie",
+    summary:
+      "Fin de tour : attire les entités alignées ; sans entité au contact, devient Indéplaçable.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "bram",
+    id: 20359,
+    name: "Couronne de Brâm Barbe-Monde",
+    spell: "Roi sous la Montagne",
+    summary:
+      "Retrait de PA ou PM effectué ou subi : +2 % de dommages finaux pendant 2 tours (5 cumuls).",
+    question: "Combien de cumuls ?",
+    choices: stacks(
+      5,
+      (n) => `${n} cumul${n > 1 ? "s" : ""} : +${2 * n} % dommages finaux`,
+      (n) => ({ finalDamagePct: 2 * n }),
+    ),
+  },
+  {
+    key: "ganymede",
+    id: 20360,
+    name: "Diadème de Ganymède",
+    spell: "Sagesse de Ganymède",
+    summary: "Tours pairs : +2 PA. Tours impairs : −1 PA et −1 PM.",
+    question: "Quel tour simuler ?",
+    choices: [
+      { id: "even", label: "Tour pair : +2 PA", stats: { ap: 2 } },
+      { id: "odd", label: "Tour impair : −1 PA et −1 PM", stats: { ap: -1, mp: -1 } },
+    ],
+  },
+  {
+    key: "oto-mustam",
+    id: 32114,
+    name: "Ardeur d'Oto Mustam",
+    spell: "Ardeur de la Cité Sombre",
+    summary: "Début de tour : +1 % de dommages finaux par ennemi en vie (4 au plus).",
+    question: "Combien d'ennemis en vie ?",
+    choices: stacks(
+      4,
+      (n) => `${n} ennemi${n > 1 ? "s" : ""} : +${n} % dommages finaux`,
+      (n) => ({ finalDamagePct: n }),
+    ),
+  },
+  {
+    key: "destin",
+    id: 20354,
+    name: "Ciseaux du Destin",
+    spell: "Destin Fatidique",
+    summary:
+      "Fin de tour : les ennemis au contact subissent 6 % de dommages en plus pendant 2 tours ; +10 Tacle par ennemi touché.",
+    question: "Combien d'ennemis touchés ?",
+    choices: stacks(
+      4,
+      (n) => `${n} ennemi${n > 1 ? "s" : ""} : +6 % dégâts sur eux, +${10 * n} Tacle`,
+      (n) => ({ finalDamagePct: 6, lock: 10 * n }),
+    ),
+  },
+  {
+    key: "crocobur",
+    id: 20353,
+    name: "Crocobur",
+    spell: "Appétit de Crocobur",
+    summary:
+      "Début de tour : s'inflige 15 dommages pour les rendre en vol de vie aux entités au contact.",
+    question: NO_STAT_EFFECT,
+    choices: [],
+  },
+  {
+    key: "amayiro",
+    id: 32163,
+    name: "Ferveur d'Amayiro",
+    spell: "Ferveur de la Cité Blanche",
+    summary: "Début de tour : +1 % de résistance par ennemi en vie (4 au plus), porteur et alliés.",
+    question: "Combien d'ennemis en vie ?",
+    choices: stacks(
+      4,
+      (n) => `${n} ennemi${n > 1 ? "s" : ""} : +${n} % de résistances`,
+      (n) => allResPct(n),
+    ),
+  },
+  {
+    key: "thanatena",
+    id: 32117,
+    name: "Jugement de Thanatena",
+    spell: "Jugement de Thanatena",
+    summary:
+      "Début de tour : tout le monde subit 4 % de dommages en plus. Ennemi achevé : +10 % de dommages finaux pendant 1 tour.",
+    question: "Quelle situation simuler ?",
+    choices: [
+      {
+        id: "aura",
+        label: "Début de tour : +4 % de dégâts subis par la cible",
+        stats: { finalDamagePct: 4 },
+      },
+      {
+        id: "kill",
+        label: "Et un ennemi achevé : +14 % au total",
+        stats: { finalDamagePct: 14 },
+      },
+    ],
+  },
+  {
+    key: "guerre",
+    id: 22368,
+    name: "Hachebarde de Guerre",
+    spell: "Guerre de Positions",
+    summary: "Ennemi achevé : +1 PM jusqu'à la fin du combat (5 cumuls).",
+    question: "Combien d'ennemis achevés ?",
+    choices: stacks(
+      5,
+      (n) => `${n} ennemi${n > 1 ? "s" : ""} achevé${n > 1 ? "s" : ""} : +${n} PM`,
+      (n) => ({ mp: n }),
+    ),
+  },
+  {
+    key: "menalt",
+    id: 32116,
+    name: "Lance-Éclair de Menalt",
+    spell: "Ordre du Tonnerre",
+    summary: "Chaque PM utilisé : +6 Dommages Poussée pendant 2 tours.",
+    question: "Combien de PM utilisés ?",
+    choices: stacks(
+      6,
+      (n) => `${n} PM : +${6 * n} Do Poussée`,
+      (n) => ({ pushbackDamage: 6 * n }),
     ),
   },
 ];

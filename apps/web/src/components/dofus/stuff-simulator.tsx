@@ -1225,7 +1225,7 @@ export function StuffSimulator({
             setPicking(null);
             // Objet à effet spécial : on demande tout de suite la situation à simuler.
             const effect = specialEffectOf(item);
-            if (effect) setAsking(effect.key);
+            if (effect && effect.choices.length > 0) setAsking(effect.key);
           }}
           onRemove={() => {
             const slots = { ...stuff.slots };
