@@ -130,28 +130,42 @@ describe("équipements légendaires", () => {
 });
 
 describe("situation de l'optimiseur", () => {
-  const ids = [7754, 6980, 20358, 32114, 32163, 20359, 8698].map((id) => ({ id }));
+  const ids = [7754, 6980, 20358, 32114, 32163, 20359, 8698, 739, 694, 29136, 22001, 22004].map(
+    (id) => ({ id }),
+  );
+  const short = (turn: "odd" | "even" | "average") => scenarioBuffs(ids, { turn, fight: "short" });
+  const long = scenarioBuffs(ids, { turn: "odd", fight: "long" });
 
-  it("compte Vulbis, Trompe-la-Mort, Oto Mustam et Amayiro au maximum", () => {
-    const buffs = scenarioBuffs(ids);
-    expect(buffs.get(6980)).toEqual({ finalDamagePct: 10 });
-    expect(buffs.get(20358)).toEqual({ finalDamagePct: 7 });
-    expect(buffs.get(32114)).toEqual({ finalDamagePct: 4 });
-    expect(buffs.get(32163)?.fireResPct).toBe(4);
-    // Combat court : la Couronne de Brâm (cumuls) ne donne rien.
-    expect(buffs.has(20359)).toBe(false);
+  it("combat court : pas touché, tous les ennemis en vie, PV hauts, Turquoise 4", () => {
+    const b = short("odd");
+    expect(b.get(6980)).toEqual({ finalDamagePct: 10 });
+    expect(b.get(20358)).toEqual({ finalDamagePct: 7 });
+    expect(b.get(32114)).toEqual({ finalDamagePct: 4 });
+    expect(b.get(32163)?.fireResPct).toBe(4);
+    expect(b.get(739)).toEqual({ finalDamagePct: 4 });
+    expect(b.has(694)).toBe(false); // Pourpre : pas le temps de cumuler
+    expect(b.has(29136)).toBe(false); // Sylvestre : long terme
+    expect(b.has(20359)).toBe(false); // Brâm : cumuls
   });
 
-  it("tour impair, pair ou moyenne pour le Nébuleux", () => {
-    const at = (turn: "odd" | "even" | "average") =>
-      scenarioBuffs(ids, { turn, fight: "short" }).get(8698);
-    expect(at("odd")).toEqual({ finalDamagePct: 20 });
-    expect(at("even")).toEqual({ finalDamagePct: -10 });
-    expect(at("average")).toEqual({ finalDamagePct: 5 });
+  it("combat court : Nébuleux et Prysmaradites selon le tour", () => {
+    expect(short("odd").get(8698)).toEqual({ finalDamagePct: 20 });
+    expect(short("even").get(8698)).toEqual({ finalDamagePct: -10 });
+    expect(short("average").get(8698)).toEqual({ finalDamagePct: 5 });
+    expect(short("odd").get(22001)).toEqual({ critical: 100 });
+    expect(short("average").get(22001)).toEqual({ critical: 67 });
+    expect(short("odd").get(22004)?.finalDamagePct).toBe(10);
   });
 
-  it("combat long : cumuls au maximum", () => {
-    const buffs = scenarioBuffs(ids, { turn: "odd", fight: "long" });
-    expect(buffs.get(20359)).toEqual({ finalDamagePct: 10 });
+  it("combat long : cumuls au maximum, bonus de début de combat réduits ou retirés", () => {
+    expect(long.get(6980)).toEqual({ finalDamagePct: 5 }); // Vulbis à moitié
+    expect(long.get(32114)).toEqual({ finalDamagePct: 2 }); // 60 % de 4
+    expect(long.has(20358)).toBe(false); // PV sous 50 %
+    expect(long.has(8698)).toBe(false); // Nébuleux
+    expect(long.has(22001)).toBe(false); // Prysmaradite
+    expect(long.get(694)).toEqual({ finalDamagePct: 10 });
+    expect(long.get(739)).toEqual({ finalDamagePct: 10 });
+    expect(long.get(29136)).toEqual({ power: 96 });
+    expect(long.get(20359)).toEqual({ finalDamagePct: 10 });
   });
 });

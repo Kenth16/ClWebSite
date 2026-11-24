@@ -240,6 +240,47 @@ export const SPECIAL_EFFECTS: readonly SpecialEffect[] = [
     ),
   },
 
+  // ── Prysmaradites (effets des premiers tours) ────────────────────────────
+  {
+    key: "surpryz",
+    id: 22001,
+    name: "Surpryz",
+    spell: "Surpryz",
+    summary: "+100 % Critique au premier tour, +35 % au deuxième, +15 % au troisième.",
+    question: "Quel tour simuler ?",
+    choices: [
+      { id: "t1", label: "Tour 1 : +100 % Critique", stats: { critical: 100 } },
+      { id: "t2", label: "Tour 2 : +35 % Critique", stats: { critical: 35 } },
+      { id: "t3", label: "Tour 3 : +15 % Critique", stats: { critical: 15 } },
+    ],
+  },
+  {
+    key: "prynyang",
+    id: 22004,
+    name: "Prynyang",
+    spell: "Prynyang",
+    summary:
+      "Tour 1 : −10 % résistances, +10 % dommages finaux. Tour 2 : +3 % des deux. Tour 3 : −10 % dommages finaux, +10 % résistances.",
+    question: "Quel tour simuler ?",
+    choices: [
+      {
+        id: "t1",
+        label: "Tour 1 : +10 % dommages finaux, −10 % résistances",
+        stats: { finalDamagePct: 10, ...allResPct(-10) },
+      },
+      {
+        id: "t2",
+        label: "Tour 2 : +3 % dommages finaux et résistances",
+        stats: { finalDamagePct: 3, ...allResPct(3) },
+      },
+      {
+        id: "t3",
+        label: "Tour 3 : −10 % dommages finaux, +10 % résistances",
+        stats: { finalDamagePct: -10, ...allResPct(10) },
+      },
+    ],
+  },
+
   // ── Équipements légendaires ──────────────────────────────────────────────
   {
     key: "helsephine",
@@ -665,34 +706,50 @@ export interface OptimizerSituation {
 
 export const DEFAULT_SITUATION: OptimizerSituation = { turn: "odd", fight: "short" };
 
-/**
- * Hypothèses fixes, les mêmes pour tous les objets : pas touché ce tour,
- * ennemis en vie au maximum, PV au-dessus de 50 %, aucun ennemi achevé.
- */
-export const OPTIMIZER_SITUATION: readonly { label: string; value: string }[] = [
-  { label: "Touché ce tour", value: "Non (Vulbis +10 % dommages finaux)" },
-  { label: "Ennemis en vie", value: "Le maximum (Oto Mustam, Amayiro)" },
-  { label: "PV au-dessus de 50 %", value: "Oui (Trompe-la-Mort)" },
-  { label: "Ennemis achevés", value: "Aucun" },
-  { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
-];
+/** Hypothèses de la situation, selon la durée du combat (rappel affiché au joueur). */
+export function situationSummary(fight: OptimizerFight): { label: string; value: string }[] {
+  return fight === "short"
+    ? [
+        { label: "Touché ce tour", value: "Non (Vulbis +10 % dommages finaux)" },
+        { label: "Ennemis en vie", value: "Tous (Oto Mustam, Amayiro au maximum)" },
+        { label: "PV au-dessus de 50 %", value: "Oui (Trompe-la-Mort)" },
+        { label: "Premiers tours", value: "Nébuleux, Surpryz, Prynyang selon le tour" },
+        { label: "Cumuls", value: "Turquoise 4 ; Pourpre et autres : aucun" },
+        { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
+      ]
+    : [
+        { label: "Touché ce tour", value: "Parfois (Vulbis à moitié : +5 %)" },
+        { label: "Ennemis en vie", value: "60 % du bonus (Oto Mustam, Amayiro)" },
+        { label: "PV au-dessus de 50 %", value: "Non (pas de Trompe-la-Mort)" },
+        { label: "Premiers tours", value: "Non comptés (Nébuleux, Prysmaradites)" },
+        { label: "Cumuls", value: "Au maximum (Brâm, Pourpre, Turquoise, Sylvestre…)" },
+        { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
+      ];
+}
 
-/** Choix fixes, quelle que soit la situation choisie. */
-const FIXED_CHOICES: SpecialChoices = {
+/** Combat court (tours 1 et 2) : choix fixes. */
+const SHORT_CHOICES: SpecialChoices = {
   ocre: "safe",
   vulbis: "safe",
   "oto-mustam": "x4",
   amayiro: "x4",
   "trompe-la-mort": "high",
+  turquoise: "x4",
 };
-/** Effets qui dépendent du tour : choix du tour impair et du tour pair. */
-const TURN_CHOICES: Record<string, { odd: string; even: string }> = {
+/** Combat court : effets qui dépendent du tour (impair = tour 1, pair = tour 2). */
+const SHORT_TURN_CHOICES: Record<string, { odd: string; even: string }> = {
   nebuleux: { odd: "odd", even: "even" },
   ganymede: { odd: "odd", even: "even" },
   "mille-lieues": { odd: "odd", even: SPECIAL_NONE },
+  surpryz: { odd: "t1", even: "t2" },
+  prynyang: { odd: "t1", even: "t2" },
 };
-/** Combat long : cumuls au maximum (bonus de dégâts ou de résistances). */
-const LONG_FIGHT_CHOICES: SpecialChoices = {
+/** Combat long : moins d'ennemis en vie (60 % du bonus), cumuls au maximum. */
+const LONG_CHOICES: SpecialChoices = {
+  ocre: "safe",
+  vulbis: "safe",
+  "oto-mustam": "x2",
+  amayiro: "x2",
   turquoise: "x10",
   pourpre: "x10",
   dofoozbz: "x10",
@@ -700,16 +757,26 @@ const LONG_FIGHT_CHOICES: SpecialChoices = {
   misere: "x4",
   jhessica: "x4",
   bram: "x5",
+  sylvestre: "x12",
 };
+/** Combat long : bonus comptés en partie (pas touché un tour sur deux). */
+const LONG_SCALE: Record<string, number> = { ocre: 0.5, vulbis: 0.5 };
 
-/** Choix des effets dans une situation (tour pair pour la moyenne, côté simulateur). */
+/**
+ * Choix des effets dans une situation, pour le simulateur : tour impair pour la
+ * moyenne, et sans les bonus comptés en partie (pas de choix équivalent).
+ */
 export function optimizerChoices(
   situation: OptimizerSituation,
   turn: "odd" | "even" = situation.turn === "even" ? "even" : "odd",
 ): SpecialChoices {
-  const choices: SpecialChoices = { ...FIXED_CHOICES };
-  for (const [key, byTurn] of Object.entries(TURN_CHOICES)) choices[key] = byTurn[turn];
-  if (situation.fight === "long") Object.assign(choices, LONG_FIGHT_CHOICES);
+  if (situation.fight === "long") {
+    const choices = { ...LONG_CHOICES };
+    for (const key of Object.keys(LONG_SCALE)) delete choices[key];
+    return choices;
+  }
+  const choices: SpecialChoices = { ...SHORT_CHOICES };
+  for (const [key, byTurn] of Object.entries(SHORT_TURN_CHOICES)) choices[key] = byTurn[turn];
   return choices;
 }
 
@@ -722,20 +789,20 @@ export function scenarioBuffs(
   situation: OptimizerSituation = DEFAULT_SITUATION,
 ): Map<number, Partial<Record<StatKey, number>>> {
   const out = new Map<number, Partial<Record<StatKey, number>>>();
-  const odd = optimizerChoices(situation, "odd");
-  const even = optimizerChoices(situation, "even");
+  const long = situation.fight === "long";
+  const odd = long ? LONG_CHOICES : optimizerChoices(situation, "odd");
+  const even = long ? LONG_CHOICES : optimizerChoices(situation, "even");
+  const average = !long && situation.turn === "average";
   for (const item of items) {
-    let buffs: Partial<Record<StatKey, number>>;
-    if (situation.turn === "average") {
-      const a = specialBuffs([item], odd);
-      const b = specialBuffs([item], even);
-      buffs = {};
-      for (const k of new Set([...Object.keys(a), ...Object.keys(b)]) as Set<StatKey>) {
-        // Arrondi à l'inférieur : des valeurs entières pour le solveur, sans surestimer.
-        const v = Math.floor(((a[k] ?? 0) + (b[k] ?? 0)) / 2);
-        if (v !== 0) buffs[k] = v;
-      }
-    } else buffs = specialBuffs([item], situation.turn === "odd" ? odd : even);
+    const scale = long ? (LONG_SCALE[specialEffectOf(item)?.key ?? ""] ?? 1) : 1;
+    const a = specialBuffs([item], situation.turn === "even" && !long ? even : odd);
+    const b = average ? specialBuffs([item], even) : a;
+    const buffs: Partial<Record<StatKey, number>> = {};
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)]) as Set<StatKey>) {
+      // Arrondi à l'inférieur : des valeurs entières pour le solveur, sans surestimer.
+      const v = Math.floor((((a[k] ?? 0) + (b[k] ?? 0)) / 2) * scale);
+      if (v !== 0) buffs[k] = v;
+    }
     if (Object.keys(buffs).length > 0) out.set(item.id, buffs);
   }
   return out;

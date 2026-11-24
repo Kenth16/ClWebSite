@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Check, Loader2 } from "lucide-react";
 import {
-  OPTIMIZER_SITUATION,
+  situationSummary,
   type DofusItem,
   type OptimizerFight,
   type OptimizerSituation,
@@ -15,12 +15,12 @@ import { cn } from "@/lib/utils";
 import { ItemIcon } from "./item-picker";
 
 const TURNS: { value: OptimizerTurn; label: string; help: string }[] = [
-  { value: "odd", label: "Impair", help: "Nébuleux +20 %" },
-  { value: "even", label: "Pair", help: "Nébuleux −10 %" },
-  { value: "average", label: "Moyenne", help: "moitié de chaque" },
+  { value: "odd", label: "Tour 1", help: "Nébuleux +20 %, Surpryz +100 %" },
+  { value: "even", label: "Tour 2", help: "Nébuleux −10 %, Surpryz +35 %" },
+  { value: "average", label: "Moyenne T1 / T2", help: "moitié de chaque" },
 ];
 const FIGHTS: { value: OptimizerFight; label: string; help: string }[] = [
-  { value: "short", label: "Court", help: "aucun cumul" },
+  { value: "short", label: "Court", help: "tours 1 et 2, burst" },
   { value: "long", label: "Long", help: "cumuls au maximum" },
 ];
 
@@ -125,20 +125,22 @@ export function OptimizerSituationPanel({
     <div className="grid gap-3">
       <div className="flex flex-wrap items-end gap-4">
         <Options
-          label="Tour simulé"
-          value={situation.turn}
-          options={TURNS}
-          onChange={(turn) => onSituation({ ...situation, turn })}
-        />
-        <Options
           label="Durée du combat"
           value={situation.fight}
           options={FIGHTS}
           onChange={(fight) => onSituation({ ...situation, fight })}
         />
+        {situation.fight === "short" && (
+          <Options
+            label="Tour simulé"
+            value={situation.turn}
+            options={TURNS}
+            onChange={(turn) => onSituation({ ...situation, turn })}
+          />
+        )}
       </div>
       <dl className="grid gap-x-4 gap-y-1 rounded-lg border bg-background/40 p-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
-        {OPTIMIZER_SITUATION.map((row) => (
+        {situationSummary(situation.fight).map((row) => (
           <div key={row.label} className="flex min-w-0 gap-1.5">
             <dt className="shrink-0 text-muted-foreground">{row.label} :</dt>
             <dd className="min-w-0 font-medium">{row.value}</dd>
