@@ -4,6 +4,7 @@ import {
   LEVEL_MAX,
   SLOT_SUBTYPES,
   SLOT_TYPES,
+  isAllowedItem,
   optimizeRequestSchema,
   parseStatFilters,
   type ItemStatFilter,
@@ -48,6 +49,15 @@ export const dofusRoutes: FastifyPluginAsync<{
       throw new HttpError(400, "Catégorie inconnue.");
     }
     return { items: await client.searchItems(family, q, maxLevel, { subtype, stats }) };
+  });
+
+  /** Tous les Dofus (pas les trophées) : liste « Dofus possédés » de l'optimiseur. */
+  app.get("/dofus", limited, async () => {
+    const all = await client.allEquipment();
+    const dofus = all
+      .filter((i) => i.type === "Dofus" && isAllowedItem(i))
+      .sort((a, b) => b.level - a.level || a.name.localeCompare(b.name, "fr"));
+    return { items: dofus };
   });
 
   app.get("/items/:id", limited, async (request) => {

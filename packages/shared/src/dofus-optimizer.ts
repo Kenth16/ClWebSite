@@ -2,6 +2,7 @@ import {
   CHARACTERISTICS,
   ELEMENTS,
   LEVEL_MAX,
+  PICKABLE_ELEMENTS,
   SCROLL_MAX,
   SLOTS,
   STATS,
@@ -24,6 +25,7 @@ import {
 } from "./dofus";
 import { z } from "zod";
 import { criteriaMet, type CriteriaTree } from "./dofus-criteria";
+import { DEFAULT_SITUATION, OPTIMIZER_FIGHTS, OPTIMIZER_TURNS } from "./dofus-special";
 
 // ─── Demande ───────────────────────────────────────────────────────────────
 
@@ -32,6 +34,9 @@ export const OPTIMIZER_AP_MIN = 6;
 
 /** Sorts que le joueur peut évaluer à la fois. */
 export const OPTIMIZER_SPELLS_MAX = 20;
+/** Objets que le joueur peut imposer (un par emplacement) ou interdire. */
+export const OPTIMIZER_FORCED_MAX = 16;
+export const OPTIMIZER_BANNED_MAX = 200;
 /** Éléments dont on peut exiger un % de résistance minimal. */
 export const RESISTANCE_STATS = {
   neutral: "neutralResPct",
@@ -43,45 +48,72 @@ export const RESISTANCE_STATS = {
 
 const resistanceMin = z.number().int().min(-100).max(100).optional();
 
-export const optimizeRequestSchema = z.object({
-  breedId: z.number().int().positive("Choisissez une classe."),
-  level: z.number().int().min(1).max(LEVEL_MAX),
-  /** Sorts choisis par le joueur : leurs dégâts (un lancer chacun) sont additionnés. */
-  spellIds: z
-    .array(z.number().int().positive())
-    .min(1, "Choisissez au moins un sort.")
-    .max(OPTIMIZER_SPELLS_MAX, `Au plus ${OPTIMIZER_SPELLS_MAX} sorts.`)
-    .refine((l) => new Set(l).size === l.length, "Sort en double."),
-  /** PA que le stuff doit atteindre (exo compris). */
-  ap: z.number().int().min(OPTIMIZER_AP_MIN).max(STAT_CAPS.ap),
-  /** Exos PA, PM, PO que le joueur peut se payer (+1 chacun sur un objet). */
-  exos: z
-    .object({ ap: z.boolean(), mp: z.boolean(), range: z.boolean() })
-    .default({ ap: false, mp: false, range: false }),
-  /** Coups critiques pondérés par la chance de critique, ou aucun critique. */
-  critical: z.boolean().default(true),
-  /** Distance ou mêlée : quel % de dommages s'applique à tous les sorts. */
-  attack: z.enum(["ranged", "melee"]).default("ranged"),
-  /** Parchemins dans chaque caractéristique (0 à 100). */
-  scrolls: z.number().int().min(0).max(SCROLL_MAX).default(100),
-  /** Exigences minimales du stuff. */
-  minimums: z
-    .object({
-      hp: z.number().int().min(0).max(100_000).optional(),
-      mp: z.number().int().min(0).max(STAT_CAPS.mp).optional(),
-      range: z.number().int().min(0).max(STAT_CAPS.range).optional(),
-      resistances: z
-        .object({
-          neutral: resistanceMin,
-          earth: resistanceMin,
-          fire: resistanceMin,
-          water: resistanceMin,
-          air: resistanceMin,
-        })
-        .default({}),
-    })
-    .default({ resistances: {} }),
-});
+export const optimizeRequestSchema = z
+  .object({
+    breedId: z.number().int().positive("Choisissez une classe."),
+    level: z.number().int().min(1).max(LEVEL_MAX),
+    /** Sorts choisis par le joueur : leurs dégâts (un lancer chacun) sont additionnés. */
+    spellIds: z
+      .array(z.number().int().positive())
+      .min(1, "Choisissez au moins un sort.")
+      .max(OPTIMIZER_SPELLS_MAX, `Au plus ${OPTIMIZER_SPELLS_MAX} sorts.`)
+      .refine((l) => new Set(l).size === l.length, "Sort en double."),
+    /** PA que le stuff doit atteindre (exo compris). */
+    ap: z.number().int().min(OPTIMIZER_AP_MIN).max(STAT_CAPS.ap),
+    /** Exos PA, PM, PO que le joueur peut se payer (+1 chacun sur un objet). */
+    exos: z
+      .object({ ap: z.boolean(), mp: z.boolean(), range: z.boolean() })
+      .default({ ap: false, mp: false, range: false }),
+    /** Coups critiques pondérés par la chance de critique, ou aucun critique. */
+    critical: z.boolean().default(true),
+    /** Distance ou mêlée : quel % de dommages s'applique à tous les sorts. */
+    attack: z.enum(["ranged", "melee"]).default("ranged"),
+    /** Parchemins dans chaque caractéristique (0 à 100). */
+    scrolls: z.number().int().min(0).max(SCROLL_MAX).default(100),
+    /** Exigences minimales du stuff. */
+    minimums: z
+      .object({
+        hp: z.number().int().min(0).max(100_000).optional(),
+        mp: z.number().int().min(0).max(STAT_CAPS.mp).optional(),
+        range: z.number().int().min(0).max(STAT_CAPS.range).optional(),
+        resistances: z
+          .object({
+            neutral: resistanceMin,
+            earth: resistanceMin,
+            fire: resistanceMin,
+            water: resistanceMin,
+            air: resistanceMin,
+          })
+          .default({}),
+      })
+      .default({ resistances: {} }),
+    /** Élément des lignes « meilleur / pire élément », par sort (identifiant). */
+    pickElements: z.record(z.string().regex(/^\d+$/), z.enum(PICKABLE_ELEMENTS)).default({}),
+    /** Prysmaradites autorisées (une seule au plus dans le stuff). */
+    prysmaradites: z.boolean().default(true),
+    /** Équipements légendaires autorisés (Jahash, Crocobur, Mériana…). */
+    legendaryItems: z.boolean().default(true),
+    /** Situation de combat simulée : tour et durée du combat. */
+    situation: z
+      .object({ turn: z.enum(OPTIMIZER_TURNS), fight: z.enum(OPTIMIZER_FIGHTS) })
+      .default(DEFAULT_SITUATION),
+    /** Dofus que le joueur possède (null : tous). Les trophées restent tous permis. */
+    ownedDofus: z.array(z.number().int().positive()).max(100).nullable().default(null),
+    /** Objets imposés : toujours dans le stuff. */
+    forcedItems: z
+      .array(z.number().int().positive())
+      .max(OPTIMIZER_FORCED_MAX, `Au plus ${OPTIMIZER_FORCED_MAX} objets imposés.`)
+      .default([]),
+    /** Objets interdits : jamais proposés. */
+    bannedItems: z
+      .array(z.number().int().positive())
+      .max(OPTIMIZER_BANNED_MAX, `Au plus ${OPTIMIZER_BANNED_MAX} objets interdits.`)
+      .default([]),
+  })
+  .refine(
+    (r) => !r.forcedItems.some((id) => r.bannedItems.includes(id)),
+    "Un objet ne peut pas être à la fois imposé et interdit.",
+  );
 export type OptimizeRequest = z.infer<typeof optimizeRequestSchema>;
 
 export type StatWeights = Partial<Record<StatKey, number>>;
@@ -473,6 +505,10 @@ export interface OptimizeInput {
   perFamily?: number;
   restarts?: number;
   seed?: number;
+  /** Objets imposés : posés d'office, leurs emplacements ne bougent plus. */
+  forced?: readonly number[];
+  /** Bonus de combat de certains objets (situation simulée), ajoutés à leurs caractéristiques. */
+  buffs?: ReadonlyMap<number, Partial<Record<StatKey, number>>>;
 }
 
 export interface OptimizeResult {
@@ -526,7 +562,10 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
   const all: Candidate[] = [];
   for (const item of input.items) {
     if (!item.family || item.level > level || !isAllowedItem(item)) continue;
-    const stats = toPairs(item.effects);
+    const buff = (Object.entries(input.buffs?.get(item.id) ?? {}) as [StatKey, number][]).map(
+      ([stat, value]) => ({ stat, value, text: "" }),
+    );
+    const stats = toPairs([...item.effects, ...buff]);
     all.push({
       id: item.id,
       family: item.family,
@@ -551,7 +590,11 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
       if (c.setId !== null) keptSets.add(c.setId);
     }
   }
-  for (const c of all) if (c.setId !== null && keptSets.has(c.setId)) kept.add(c.id);
+  const forcedIds = new Set(input.forced ?? []);
+  for (const c of all) if (forcedIds.has(c.id) && c.setId !== null) keptSets.add(c.setId);
+  for (const c of all) {
+    if (forcedIds.has(c.id) || (c.setId !== null && keptSets.has(c.setId))) kept.add(c.id);
+  }
   const byId = new Map<number, Candidate>();
   const byFamily = new Map<SlotFamily, Candidate[]>();
   for (const c of all) {
@@ -618,9 +661,22 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
     );
   };
 
+  // Objets imposés : chacun dans le premier emplacement libre de sa famille, verrouillé.
+  const locked = new Set<number>();
+  const forcedSlots: (Candidate | null)[] = SLOT_LIST.map(() => null);
+  for (const id of input.forced ?? []) {
+    const c = byId.get(id);
+    const i = c ? SLOT_LIST.findIndex((s, j) => s.family === c.family && !locked.has(j)) : -1;
+    if (c && i >= 0) {
+      forcedSlots[i] = c;
+      locked.add(i);
+    }
+  }
+
   function greedy(): (Candidate | null)[] {
-    const slots: (Candidate | null)[] = SLOT_LIST.map(() => null);
+    const slots: (Candidate | null)[] = [...forcedSlots];
     SLOT_LIST.forEach((slot, i) => {
+      if (locked.has(i)) return;
       const options = [...(byFamily.get(slot.family) ?? [])].sort((a, b) => b.value - a.value);
       slots[i] = options.find((c) => !used(slots, c.id, i)) ?? null;
     });
@@ -634,7 +690,7 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
     for (const c of byId.values()) {
       if (c.setId !== setId || next.some((x) => x?.id === c.id)) continue;
       const free = SLOT_LIST.map((s, i) => ({ s, i })).filter(
-        ({ s, i }) => s.family === c.family && !placed.has(i),
+        ({ s, i }) => s.family === c.family && !placed.has(i) && !locked.has(i),
       );
       if (free.length === 0) continue;
       const target = free.reduce((worst, cur) =>
@@ -652,6 +708,7 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
     for (let round = 0; round < 30; round++) {
       let improved = false;
       for (let i = 0; i < SLOT_LIST.length; i++) {
+        if (locked.has(i)) continue;
         // Chaque objet de la famille, ou l'emplacement vide (si tous les objets nuisent).
         for (const c of [...(byFamily.get(SLOT_LIST[i]!.family) ?? []), null]) {
           if (c === null ? slots[i] === null : c.id === slots[i]?.id || used(slots, c.id, i)) {
@@ -690,6 +747,7 @@ export function optimizeStuff(input: OptimizeInput): OptimizeResult {
     }
     for (let k = 0; k < 4; k++) {
       const i = Math.floor(rand() * SLOT_LIST.length);
+      if (locked.has(i)) continue;
       const options = byFamily.get(SLOT_LIST[i]!.family) ?? [];
       const c = options[Math.floor(rand() * options.length)];
       if (c && !used(start, c.id, i)) start[i] = c;

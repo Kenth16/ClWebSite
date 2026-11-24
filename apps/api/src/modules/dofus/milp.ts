@@ -158,6 +158,9 @@ interface Cell {
   pctHi: number[];
   critLo: number;
   critHi: number;
+  /** % dommages finaux : bornes incluses (0 et 0 si aucun objet n'en donne). */
+  finLo: number;
+  finHi: number;
   /**
    * Dommages critiques ≥ 0 (cas normal : ils s'ajoutent au coup critique) ou
    * < 0 (le coup critique ne dépasse alors pas le jet critique).
@@ -205,7 +208,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     },
   };
   const model = buildDamageModel(input);
-  const { D, AP, CRIT, CRIT_DMG, MELEE, RANGED, baseVec, prepared, setTiers } = model;
+  const { D, AP, CRIT, CRIT_DMG, FINAL, MELEE, RANGED, baseVec, prepared, setTiers } = model;
   const apTarget = input.ap;
   const pctDims = [MELEE, RANGED].filter((d) => d >= 0);
   // Au-delà de ce % critique, tous les sorts sont des coups critiques : inutile de distinguer.
@@ -282,6 +285,12 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     }
     // La base s'ajoute à la constante.
     for (let d = 0; d < D; d++) constant += coef[d]! * baseVec[d]!;
+    // % dommages finaux : tout est multiplié, au plus haut de la cellule.
+    if (FINAL >= 0) {
+      const final = Math.max(0, 100 + cell.finHi) / 100;
+      for (let d = 0; d < D; d++) coef[d]! *= final;
+      constant *= final;
+    }
     return { coef, constant };
   }
 
@@ -369,6 +378,9 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     const vars = cands.filter((x) => x.family === family).map((x) => `+ ${x.var}`);
     if (vars.length > 0) common.push(row(`slot_${family}`, vars, "<=", model.slotsOf(family)));
   }
+  // Objets imposés par le joueur : toujours portés.
+  for (const x of cands)
+    if (model.forcedIds.has(x.c.id)) common.push(row(`force_${x.var}`, [`+ ${x.var}`], "=", 1));
   const prysmas = cands.filter((x) => x.c.prysma).map((x) => `+ ${x.var}`);
   if (prysmas.length > 1) common.push(row("prysma", prysmas, "<=", 1));
   for (const s of sets) {
@@ -428,11 +440,13 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     return bonuses[tier] ?? [];
   };
   /** Total d'une caractéristique : termes (objets, panoplies), constante, ampleur maximale. */
-  function statExpression(stat: StatKey) {
+  function statExpression(stat: StatKey, combat = false) {
     const terms: string[] = [];
     let size = 0;
     for (const x of cands) {
-      const w = rawStat(itemById.get(x.c.id)?.effects ?? [], stat);
+      const w =
+        rawStat(itemById.get(x.c.id)?.effects ?? [], stat) +
+        (combat ? (input.buffs?.get(x.c.id)?.[stat] ?? 0) : 0);
       if (w !== 0) {
         terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${x.var}`);
         size += Math.abs(w);
@@ -517,7 +531,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   });
   // Exigences minimales du joueur (PV, PM, PO, % résistance…), sur les totaux bruts.
   for (const [stat, min] of Object.entries(input.minimums ?? {}) as [StatKey, number][]) {
-    const { terms, constant } = statExpression(stat);
+    const { terms, constant } = statExpression(stat, true);
     common.push(row(`min_${stat}`, terms, ">=", min - constant));
   }
 
@@ -545,6 +559,11 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       rows.push(row(`pct${k}_lo`, terms, ">=", cell.pctLo[k]! - baseVec[d]!));
       rows.push(row(`pct${k}_hi`, terms, "<=", cell.pctHi[k]! - baseVec[d]!));
     });
+    if (FINAL >= 0) {
+      const finTerms = featureTerms(unit(FINAL));
+      rows.push(row("fin_lo", finTerms, ">=", cell.finLo - baseVec[FINAL]!));
+      rows.push(row("fin_hi", finTerms, "<=", cell.finHi - baseVec[FINAL]!));
+    }
     if (withCrit) {
       rows.push(
         row(
@@ -642,7 +661,12 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   let bestSlots: Partial<Record<SlotId, number>> = {};
   let bestPoints: Partial<Record<StatKey, number>> = {};
   // Le stuff de départ ne sert que s'il respecte toutes les conditions et exigences.
-  if (input.initial && model.feasible(input.initial, input.initialPoints)) {
+  const initialIds = new Set(Object.values(input.initial ?? {}));
+  if (
+    input.initial &&
+    [...model.forcedIds].every((id) => initialIds.has(id)) &&
+    model.feasible(input.initial, input.initialPoints)
+  ) {
     bestDamage = model.evaluateSlots(input.initial, input.initialPoints);
     bestSlots = { ...input.initial };
     bestPoints = { ...(input.initialPoints ?? {}) };
@@ -654,6 +678,8 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     pctHi: pctDims.map((d) => extreme(d, 1)),
     critLo: withCrit ? extreme(CRIT, -1) : 0,
     critHi: withCrit ? Math.min(extreme(CRIT, 1), critCap) : 0,
+    finLo: FINAL >= 0 ? extreme(FINAL, -1) : 0,
+    finHi: FINAL >= 0 ? extreme(FINAL, 1) : 0,
     cdPositive,
     upper: Infinity,
     cuts: [],
@@ -894,6 +920,21 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
             apply: (lo, hi) => {
               lo.critHi = crit;
               hi.critLo = crit + 1;
+            },
+          };
+        }
+      }
+    }
+    if (FINAL >= 0) {
+      const fin = cut(cell.finLo, cell.finHi, total(FINAL), 2);
+      if (fin < cell.finHi) {
+        const gain = here - upperAt(gear, { ...cell, finHi: fin });
+        if (!bestSplit || gain > (bestSplit as { gain: number }).gain) {
+          bestSplit = {
+            gain,
+            apply: (lo, hi) => {
+              lo.finHi = fin;
+              hi.finLo = fin + 1;
             },
           };
         }

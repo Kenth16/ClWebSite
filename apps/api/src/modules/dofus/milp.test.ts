@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeSetBonuses,
+  buildDamageModel,
   bestComboDamage,
   STATS,
   computeSpellDamage,
@@ -267,6 +268,119 @@ describe("optimiseur MILP", () => {
     // Meilleur stuff : arme 1 + anneau 3 (sans PA), pas l'anneau 4.
     expect(new Set(Object.values(r.slots))).toEqual(new Set([1, 3]));
   }, 60_000);
+
+  it("objet imposé : toujours porté, même s'il est dominé", async () => {
+    // L'anneau 3 est battu en tout par les anneaux 1 et 2 : sans contrainte il
+    // serait écarté. Imposé, il prend une place et le meilleur anneau l'autre.
+    const items: DofusItem[] = [
+      item(1, "ring", { strength: 80 }),
+      item(2, "ring", { strength: 70 }),
+      item(3, "ring", { strength: 5 }),
+      item(4, "hat", { strength: 40 }),
+    ];
+    const nine = turnSpells(raw, 100, ["earth"], 9);
+    const common = {
+      level: 200,
+      elements: ["earth"] as const,
+      ap: 9,
+      base: { ...base, ap: 9 },
+      spells: nine,
+      items,
+      sets: [],
+    };
+    const free = await optimizeTurnDamageMilp({ ...common, elements: ["earth"] });
+    expect(new Set(Object.values(free.slots))).toEqual(new Set([1, 2, 4]));
+    const forced = await optimizeTurnDamageMilp({ ...common, elements: ["earth"], forced: [3] });
+    expect(forced.proven).toBe(true);
+    expect(new Set(Object.values(forced.slots))).toEqual(new Set([1, 3, 4]));
+  }, 60_000);
+
+  it("bonus de combat : une cape à +10 % dommages finaux bat une cape plus forte", async () => {
+    const items: DofusItem[] = [
+      item(1, "cloak", { strength: 60 }),
+      item(2, "cloak", { strength: 20 }),
+    ];
+    const nine = turnSpells(raw, 100, ["earth"], 9);
+    const common = {
+      level: 200,
+      elements: ["earth"] as "earth"[],
+      ap: 9,
+      base: { ...base, ap: 9 },
+      spells: nine,
+      items,
+      sets: [],
+    };
+    const plain = await optimizeTurnDamageMilp(common);
+    expect(plain.slots.cloak).toBe(1);
+    const buffed = await optimizeTurnDamageMilp({
+      ...common,
+      buffs: new Map([[2, { finalDamagePct: 10 }]]),
+    });
+    expect(buffed.proven).toBe(true);
+    expect(buffed.slots.cloak).toBe(2);
+    // PA de combat (Ocre) : comptent pour les PA visés.
+    const ap10 = await optimizeTurnDamageMilp({
+      ...common,
+      ap: 10,
+      spells: turnSpells(raw, 100, ["earth"], 10),
+      items: [...items, item(3, "dofus", { strength: 1 })],
+      buffs: new Map([[3, { ap: 1 }]]),
+    });
+    expect(new Set(Object.values(ap10.slots)).has(3)).toBe(true);
+  }, 60_000);
+
+  it("bonus de combat aléatoires : même résultat qu'une recherche exhaustive", async () => {
+    for (let seed = 1; seed <= 10; seed++) {
+      const r = rng(seed * 13);
+      const stat = (): Partial<Record<StatKey, number>> => ({
+        strength: Math.floor(r() * 80),
+        power: Math.floor(r() * 20),
+        damage: Math.floor(r() * 10),
+        critical: Math.floor(r() * 10),
+        rangedDamagePct: Math.floor(r() * 10),
+      });
+      const items = [
+        ...[1, 2, 3].map((id) => item(id, "hat", stat())),
+        ...[4, 5, 6].map((id) => item(id, "cloak", stat())),
+        ...[7, 8].map((id) => item(id, "dofus", stat())),
+      ];
+      const buffs = new Map<number, Partial<Record<StatKey, number>>>();
+      for (const i of items) {
+        if (r() < 0.4) buffs.set(i.id, { finalDamagePct: 1 + Math.floor(r() * 12) });
+      }
+      const spells = turnSpells(raw, 100, ["earth"], 9).map((s) => ({ ...s, limit: 1 }));
+      const input = {
+        level: 200,
+        elements: ["earth"] as "earth"[],
+        ap: 9,
+        base: { ...base, ap: 9 },
+        spells,
+        items,
+        sets: [],
+        mode: "rotation" as const,
+        buffs,
+      };
+      const model = buildDamageModel(input);
+      let best = -Infinity;
+      const opt = <T>(l: T[]) => [null, ...l];
+      for (const hat of opt([1, 2, 3]))
+        for (const cloak of opt([4, 5, 6]))
+          for (const d1 of opt([7, 8]))
+            for (const d2 of opt([7, 8])) {
+              if (d1 !== null && d1 === d2) continue;
+              const slots = {
+                ...(hat ? { hat } : {}),
+                ...(cloak ? { cloak } : {}),
+                ...(d1 ? { dofus1: d1 } : {}),
+                ...(d2 ? { dofus2: d2 } : {}),
+              };
+              best = Math.max(best, model.evaluateSlots(slots));
+            }
+      const result = await optimizeTurnDamageMilp(input);
+      expect(result.proven).toBe(true);
+      expect(result.damage).toBeCloseTo(best, 6);
+    }
+  }, 120_000);
 
   it("rotation choisie : points de caractéristique et exigences minimales, comme une recherche exhaustive", async () => {
     const budget = 12;

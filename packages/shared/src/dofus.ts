@@ -823,6 +823,32 @@ export const PICKABLE_ELEMENTS = [
   "water",
   "air",
 ] as const satisfies readonly DofusElement[];
+export type PickableElement = (typeof PICKABLE_ELEMENTS)[number];
+
+/**
+ * Grade utilisé par l'optimiseur : les lignes « meilleur / pire élément »
+ * frappent dans l'élément choisi par le joueur (retirées s'il n'en a pas
+ * choisi), et les dégâts sous condition ne comptent que si le sort n'a aucune
+ * ligne directe (variantes qui ne frappent qu'en zone, par déclenchement…).
+ */
+export function optimizerGrade(grade: SpellGrade, pick?: PickableElement): SpellGrade {
+  const direct = grade.lines.some((l) => !l.condition);
+  const map = (lines: SpellDamageLine[]) =>
+    lines
+      .filter((l) => (direct ? !l.condition : true) && (!l.pick || pick))
+      .map((l) => {
+        if (!l.pick) return l;
+        const copy: SpellDamageLine = { ...l, element: pick! };
+        delete copy.pick;
+        return copy;
+      });
+  return { ...grade, lines: map(grade.lines), criticalLines: map(grade.criticalLines) };
+}
+
+/** Le sort a-t-il des lignes « meilleur / pire élément » à ce grade ? */
+export function hasPickedLines(grade: SpellGrade): boolean {
+  return grade.lines.some((l) => l.pick);
+}
 
 /**
  * Le grade réduit à ses lignes directes : sans les lignes « meilleur / pire

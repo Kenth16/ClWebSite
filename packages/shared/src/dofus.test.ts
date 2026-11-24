@@ -20,6 +20,8 @@ import {
   type DofusItem,
   type DofusSet,
   type DofusSpell,
+  optimizerGrade,
+  type SpellGrade,
 } from "./dofus";
 
 const zero = { vitality: 0, wisdom: 0, strength: 0, intelligence: 0, chance: 0, agility: 0 };
@@ -394,5 +396,43 @@ describe("meilleur et pire élément", () => {
     };
     expect(spellMatchesElements(spell, ["water"])).toBe(true);
     expect(spellElements(spell)).toEqual([]);
+  });
+});
+
+describe("grade de l'optimiseur", () => {
+  const grade = (lines: SpellGrade["lines"]): SpellGrade => ({
+    grade: 1,
+    minLevel: 1,
+    apCost: 4,
+    minRange: 1,
+    range: 5,
+    criticalChance: 10,
+    maxCastsPerTurn: 2,
+    lines,
+    criticalLines: lines,
+  });
+
+  it("frappe dans l'élément choisi pour les lignes « meilleur élément »", () => {
+    const g = optimizerGrade(
+      grade([{ element: "neutral", kind: "damage", min: 10, max: 12, pick: "best" }]),
+      "fire",
+    );
+    expect(g.lines).toEqual([{ element: "fire", kind: "damage", min: 10, max: 12 }]);
+    expect(g.criticalLines[0]!.element).toBe("fire");
+    expect(optimizerGrade(g, undefined).lines).toHaveLength(1);
+    const unpicked = optimizerGrade(
+      grade([{ element: "neutral", kind: "damage", min: 1, max: 2, pick: "best" }]),
+    );
+    expect(unpicked.lines).toHaveLength(0);
+  });
+
+  it("compte les dégâts sous condition seulement sans ligne directe", () => {
+    const zoneOnly = grade([{ element: "air", kind: "damage", min: 5, max: 6, condition: "zone" }]);
+    expect(optimizerGrade(zoneOnly).lines).toHaveLength(1);
+    const mixed = grade([
+      { element: "air", kind: "damage", min: 5, max: 6 },
+      { element: "air", kind: "damage", min: 9, max: 9, condition: "delayed" },
+    ]);
+    expect(optimizerGrade(mixed).lines).toHaveLength(1);
   });
 });

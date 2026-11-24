@@ -604,6 +604,14 @@ export const SPECIAL_EFFECTS: readonly SpecialEffect[] = [
 
 const BY_ID = new Map(SPECIAL_EFFECTS.map((e) => [e.id, e]));
 
+/**
+ * Équipements légendaires (Jahash, Crocobur, Mériana…) : les effets listés
+ * après les Dofus et trophées dans SPECIAL_EFFECTS, à partir d'Helséphine.
+ */
+export const LEGENDARY_ITEM_IDS: ReadonlySet<number> = new Set(
+  SPECIAL_EFFECTS.slice(SPECIAL_EFFECTS.findIndex((e) => e.key === "helsephine")).map((e) => e.id),
+);
+
 /** Effet spécial à choix d'un objet, ou null. */
 export function specialEffectOf(item: { id: number }): SpecialEffect | null {
   return BY_ID.get(item.id) ?? null;
@@ -639,6 +647,98 @@ export function specialBuffs(
     }
   }
   return buffs;
+}
+
+// ─── Situation de combat de l'optimiseur ────────────────────────────────────
+
+/** Tour simulé par l'optimiseur : impair, pair, ou moyenne des deux. */
+export const OPTIMIZER_TURNS = ["odd", "even", "average"] as const;
+export type OptimizerTurn = (typeof OPTIMIZER_TURNS)[number];
+/** Durée du combat : court (aucun cumul) ou long (cumuls au maximum). */
+export const OPTIMIZER_FIGHTS = ["short", "long"] as const;
+export type OptimizerFight = (typeof OPTIMIZER_FIGHTS)[number];
+
+export interface OptimizerSituation {
+  turn: OptimizerTurn;
+  fight: OptimizerFight;
+}
+
+export const DEFAULT_SITUATION: OptimizerSituation = { turn: "odd", fight: "short" };
+
+/**
+ * Hypothèses fixes, les mêmes pour tous les objets : pas touché ce tour,
+ * ennemis en vie au maximum, PV au-dessus de 50 %, aucun ennemi achevé.
+ */
+export const OPTIMIZER_SITUATION: readonly { label: string; value: string }[] = [
+  { label: "Touché ce tour", value: "Non (Vulbis +10 % dommages finaux)" },
+  { label: "Ennemis en vie", value: "Le maximum (Oto Mustam, Amayiro)" },
+  { label: "PV au-dessus de 50 %", value: "Oui (Trompe-la-Mort)" },
+  { label: "Ennemis achevés", value: "Aucun" },
+  { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
+];
+
+/** Choix fixes, quelle que soit la situation choisie. */
+const FIXED_CHOICES: SpecialChoices = {
+  ocre: "safe",
+  vulbis: "safe",
+  "oto-mustam": "x4",
+  amayiro: "x4",
+  "trompe-la-mort": "high",
+};
+/** Effets qui dépendent du tour : choix du tour impair et du tour pair. */
+const TURN_CHOICES: Record<string, { odd: string; even: string }> = {
+  nebuleux: { odd: "odd", even: "even" },
+  ganymede: { odd: "odd", even: "even" },
+  "mille-lieues": { odd: "odd", even: SPECIAL_NONE },
+};
+/** Combat long : cumuls au maximum (bonus de dégâts ou de résistances). */
+const LONG_FIGHT_CHOICES: SpecialChoices = {
+  turquoise: "x10",
+  pourpre: "x10",
+  dofoozbz: "x10",
+  domakuro: "x8",
+  misere: "x4",
+  jhessica: "x4",
+  bram: "x5",
+};
+
+/** Choix des effets dans une situation (tour pair pour la moyenne, côté simulateur). */
+export function optimizerChoices(
+  situation: OptimizerSituation,
+  turn: "odd" | "even" = situation.turn === "even" ? "even" : "odd",
+): SpecialChoices {
+  const choices: SpecialChoices = { ...FIXED_CHOICES };
+  for (const [key, byTurn] of Object.entries(TURN_CHOICES)) choices[key] = byTurn[turn];
+  if (situation.fight === "long") Object.assign(choices, LONG_FIGHT_CHOICES);
+  return choices;
+}
+
+/**
+ * Bonus de combat de chaque objet dans une situation (objets concernés
+ * seulement). « Moyenne » : moitié du tour impair, moitié du tour pair.
+ */
+export function scenarioBuffs(
+  items: readonly { id: number }[],
+  situation: OptimizerSituation = DEFAULT_SITUATION,
+): Map<number, Partial<Record<StatKey, number>>> {
+  const out = new Map<number, Partial<Record<StatKey, number>>>();
+  const odd = optimizerChoices(situation, "odd");
+  const even = optimizerChoices(situation, "even");
+  for (const item of items) {
+    let buffs: Partial<Record<StatKey, number>>;
+    if (situation.turn === "average") {
+      const a = specialBuffs([item], odd);
+      const b = specialBuffs([item], even);
+      buffs = {};
+      for (const k of new Set([...Object.keys(a), ...Object.keys(b)]) as Set<StatKey>) {
+        // Arrondi à l'inférieur : des valeurs entières pour le solveur, sans surestimer.
+        const v = Math.floor(((a[k] ?? 0) + (b[k] ?? 0)) / 2);
+        if (v !== 0) buffs[k] = v;
+      }
+    } else buffs = specialBuffs([item], situation.turn === "odd" ? odd : even);
+    if (Object.keys(buffs).length > 0) out.set(item.id, buffs);
+  }
+  return out;
 }
 
 // ─── Pouvoirs légendaires des familiers (croquettes infusées) ───────────────

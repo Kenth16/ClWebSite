@@ -45,6 +45,13 @@ export interface DamageModelInput {
   pointsBudget?: number;
   /** Exigences minimales sur les totaux bruts (ex. vitalité, PM, % résistance). */
   minimums?: Partial<Record<StatKey, number>>;
+  /** Objets imposés : jamais écartés, toujours portés. */
+  forced?: readonly number[];
+  /**
+   * Bonus de combat de certains objets (situation simulée) : comptés dans les
+   * dégâts, les PA et les exigences, mais pas dans les conditions des objets.
+   */
+  buffs?: ReadonlyMap<number, Partial<Record<StatKey, number>>>;
 }
 
 /** Coût d'un point de caractéristique, par paliers : [jusqu'à, prix]. */
@@ -155,6 +162,17 @@ export function buildDamageModel(input: DamageModelInput) {
   const RANGED = spells.some((s) => !isMelee(s))
     ? feature("spellDamagePct", "rangedDamagePct")
     : -1;
+  // % dommages finaux : multiplie tous les dégâts (seulement si un objet ou bonus en donne).
+  const buffEffects = (id: number) =>
+    (Object.entries(input.buffs?.get(id) ?? {}) as [StatKey, number][]).map(([stat, value]) => ({
+      stat,
+      value,
+    }));
+  const hasFinal =
+    !!input.base.finalDamagePct ||
+    [...(input.buffs?.values() ?? [])].some((b) => !!b.finalDamagePct) ||
+    input.items.some((i) => i.effects.some((e) => e.stat === "finalDamagePct" && e.value !== 0));
+  const FINAL = hasFinal ? feature("finalDamagePct") : -1;
 
   const groupsMap = new Map<number, number[]>();
   spells.forEach((s, i) =>
@@ -206,6 +224,8 @@ export function buildDamageModel(input: DamageModelInput) {
     if (Math.min(f(AP), STAT_CAPS.ap) < apTarget) return -Infinity;
     const critDamage = f(CRIT_DMG);
     const critical = f(CRIT);
+    const final = f(FINAL);
+    const finish = (x: number) => (final ? Math.max(0, Math.floor((x * (100 + final)) / 100)) : x);
     const perCast = (s: TurnSpell) => {
       const p = prepared.get(s)!;
       const chance = withCrit ? Math.min(100, Math.max(0, p.critBase + critical)) / 100 : 0;
@@ -215,7 +235,12 @@ export function buildDamageModel(input: DamageModelInput) {
         const scale = 100 + f(line.stat);
         const fixed = f(line.damage);
         const hit = (roll: number, extra: number) =>
-          Math.max(0, Math.floor(((Math.floor((roll * scale) / 100) + fixed + extra) * pct) / 100));
+          finish(
+            Math.max(
+              0,
+              Math.floor(((Math.floor((roll * scale) / 100) + fixed + extra) * pct) / 100),
+            ),
+          );
         const normal = (hit(line.rolls[0]!, 0) + hit(line.rolls[1]!, 0)) / 2;
         const crit = line.critRolls
           ? (hit(line.critRolls[0]!, critDamage) + hit(line.critRolls[1]!, critDamage)) / 2
@@ -393,8 +418,11 @@ export function buildDamageModel(input: DamageModelInput) {
   const rawRange = (item: DofusItem, set: number) => {
     const rawLo: number[] = [];
     const rawHi: number[] = [];
+    const buff = input.buffs?.get(item.id) ?? {};
     for (const stat of condStats) {
       const own = rawOf(item.effects, stat);
+      // Bonus de combat : comptés pour les exigences, pas pour les conditions.
+      const extra = minimumStats.includes(stat) ? (buff[stat] ?? 0) : 0;
       let lo = 0;
       let hi = 0;
       if (set >= 0) {
@@ -418,8 +446,8 @@ export function buildDamageModel(input: DamageModelInput) {
         }
         if (!Number.isFinite(lo)) lo = hi = 0;
       }
-      rawLo.push(own + lo);
-      rawHi.push(own + hi);
+      rawLo.push(own + Math.min(0, extra) + lo);
+      rawHi.push(own + Math.max(0, extra) + hi);
     }
     return { rawLo, rawHi };
   };
@@ -497,7 +525,7 @@ export function buildDamageModel(input: DamageModelInput) {
     considered++;
     const f = (funnel.byFamily[item.family] ??= { considered: 0, kept: 0 });
     f.considered++;
-    const v = vecOf(item.effects);
+    const v = vecOf([...item.effects, ...buffEffects(item.id)]);
     const set = setOfItem.get(item.id) ?? -1;
     const hi = new Float64Array(v);
     const lo = new Float64Array(v);
@@ -510,7 +538,10 @@ export function buildDamageModel(input: DamageModelInput) {
       }
     }
     let proxy = 0;
-    for (const e of item.effects) if (e.stat) proxy += (proxyWeights[e.stat] ?? 0) * e.value;
+    for (const e of [...item.effects, ...buffEffects(item.id)]) {
+      if (e.stat) proxy += (proxyWeights[e.stat] ?? 0) * e.value;
+    }
+    if (input.buffs?.get(item.id)?.finalDamagePct) proxy += 100;
     if (set >= 0) proxy += 50; // à explorer tôt : peut compléter une panoplie
     const list = byFamily.get(item.family) ?? [];
     list.push({
@@ -532,6 +563,7 @@ export function buildDamageModel(input: DamageModelInput) {
   }
 
   const slotsOf = (f: SlotFamily) => SLOTS.filter((s) => s.family === f).length;
+  const forcedIds = new Set(input.forced ?? []);
   const geq = (a: Vec, b: Vec) => {
     for (let d = 0; d < D; d++) if (a[d]! < b[d]!) return false;
     return true;
@@ -604,6 +636,7 @@ export function buildDamageModel(input: DamageModelInput) {
     for (const [family, list] of byFamily) {
       const k = slotsOf(family);
       const kept = list.filter((a) => {
+        if (forcedIds.has(a.id)) return true;
         // L'emplacement vide fait au moins aussi bien.
         if (geq(zero, a.hi) && safeSwap(a, null)) return false;
         let plain = 0;
@@ -629,6 +662,9 @@ export function buildDamageModel(input: DamageModelInput) {
     const f = funnel.byFamily[family];
     if (f) f.kept = list.length;
   }
+  /** Objets imposés absents des candidats : impossibles à porter (niveau, condition…). */
+  const candidateIds = new Set([...byFamily.values()].flat().map((c) => c.id));
+  const missingForced = [...forcedIds].filter((id) => !candidateIds.has(id));
 
   const itemById = new Map(input.items.map((i) => [i.id, i]));
   /** Dégâts exacts d'un stuff donné par ses objets (bonus de panoplie compris). */
@@ -641,7 +677,7 @@ export function buildDamageModel(input: DamageModelInput) {
     for (const id of Object.values(slots)) {
       const item = id !== undefined ? itemById.get(id) : undefined;
       if (!item) continue;
-      const v = vecOf(item.effects);
+      const v = vecOf([...item.effects, ...buffEffects(item.id)]);
       for (let d = 0; d < D; d++) gear[d]! += v[d]!;
       const s = setOfItem.get(item.id);
       if (s !== undefined) counts.set(s, (counts.get(s) ?? 0) + 1);
@@ -693,13 +729,17 @@ export function buildDamageModel(input: DamageModelInput) {
       add(bonuses[tier] ?? []);
     }
     const context = { total: (k: StatKey) => totals.get(k) ?? 0, activeSets };
+    const combat = (stat: StatKey) =>
+      items.reduce((sum, i) => sum + (input.buffs?.get(i.id)?.[stat] ?? 0), 0);
     const minimumsMet = (Object.entries(input.minimums ?? {}) as [StatKey, number][]).every(
-      ([stat, min]) => (totals.get(stat) ?? 0) >= min,
+      ([stat, min]) => (totals.get(stat) ?? 0) + combat(stat) >= min,
     );
     return minimumsMet && items.every((i) => criteriaMet(i.criteria, context));
   }
 
   return {
+    forcedIds,
+    missingForced,
     feasible,
     pointsVec,
     withCrit,
@@ -712,6 +752,8 @@ export function buildDamageModel(input: DamageModelInput) {
     damageFeature,
     CRIT,
     CRIT_DMG,
+    FINAL,
+    buffEffects,
     MELEE,
     RANGED,
     groups,

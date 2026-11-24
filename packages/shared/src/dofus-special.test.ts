@@ -6,6 +6,8 @@ import {
   canBeLegendary,
   legendaryBuffs,
   specialBuffs,
+  LEGENDARY_ITEM_IDS,
+  scenarioBuffs,
   specialEffectOf,
 } from "./dofus-special";
 import { isAllowedItem } from "./dofus-optimizer";
@@ -107,7 +109,13 @@ describe("équipements légendaires", () => {
     expect(specialBuffs([{ id: 20362 }], { jahash: "fire3" })).toEqual({ fireResPct: 12 });
     expect(specialBuffs([{ id: 32121 }], { meriana: "ap2" })).toEqual({ apReduction: 10 });
     expect(specialBuffs([{ id: 32117 }], { thanatena: "aura" })).toEqual({ finalDamagePct: 4 });
-    expect(specialBuffs([{ id: 32117 }], { thanatena: "kill-only" })).toEqual({ finalDamagePct: 10 });
+    expect(LEGENDARY_ITEM_IDS.has(20362)).toBe(true); // Jahash
+    expect(LEGENDARY_ITEM_IDS.has(20353)).toBe(true); // Crocobur
+    expect(LEGENDARY_ITEM_IDS.has(32121)).toBe(true); // Mériana
+    expect(LEGENDARY_ITEM_IDS.has(SPECIAL_EFFECTS[0]!.id)).toBe(false); // un Dofus
+    expect(specialBuffs([{ id: 32117 }], { thanatena: "kill-only" })).toEqual({
+      finalDamagePct: 10,
+    });
     expect(specialBuffs([{ id: 32117 }], { thanatena: "kill" })).toEqual({ finalDamagePct: 14 });
     // Sans effet sur les caractéristiques : reconnu, mais aucun choix.
     expect(specialEffectOf({ id: 20353 })?.choices).toEqual([]);
@@ -118,5 +126,32 @@ describe("équipements légendaires", () => {
     expect(new Set(ids).size).toBe(ids.length);
     const keys = SPECIAL_EFFECTS.map((e) => e.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("situation de l'optimiseur", () => {
+  const ids = [7754, 6980, 20358, 32114, 32163, 20359, 8698].map((id) => ({ id }));
+
+  it("compte Vulbis, Trompe-la-Mort, Oto Mustam et Amayiro au maximum", () => {
+    const buffs = scenarioBuffs(ids);
+    expect(buffs.get(6980)).toEqual({ finalDamagePct: 10 });
+    expect(buffs.get(20358)).toEqual({ finalDamagePct: 7 });
+    expect(buffs.get(32114)).toEqual({ finalDamagePct: 4 });
+    expect(buffs.get(32163)?.fireResPct).toBe(4);
+    // Combat court : la Couronne de Brâm (cumuls) ne donne rien.
+    expect(buffs.has(20359)).toBe(false);
+  });
+
+  it("tour impair, pair ou moyenne pour le Nébuleux", () => {
+    const at = (turn: "odd" | "even" | "average") =>
+      scenarioBuffs(ids, { turn, fight: "short" }).get(8698);
+    expect(at("odd")).toEqual({ finalDamagePct: 20 });
+    expect(at("even")).toEqual({ finalDamagePct: -10 });
+    expect(at("average")).toEqual({ finalDamagePct: 5 });
+  });
+
+  it("combat long : cumuls au maximum", () => {
+    const buffs = scenarioBuffs(ids, { turn: "odd", fight: "long" });
+    expect(buffs.get(20359)).toEqual({ finalDamagePct: 10 });
   });
 });

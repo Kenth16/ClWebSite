@@ -8,7 +8,9 @@ import {
   ELEMENTS,
   LEVEL_MAX,
   OPTIMIZER_AP_MIN,
+  DEFAULT_SITUATION,
   OPTIMIZER_SPELLS_MAX,
+  PICKABLE_ELEMENTS,
   RESISTANCE_STATS,
   SCROLL_MAX,
   SLOTS,
@@ -17,8 +19,9 @@ import {
   clampLevel,
   conditionsMet,
   conditionsText,
+  hasPickedLines,
+  optimizerGrade,
   spellGradeAt,
-  withoutPickedLines,
   type Characteristic,
   type DofusBreed,
   type DofusElement,
@@ -28,6 +31,8 @@ import {
   type ExoStat,
   type Exos,
   type LineDamage,
+  type OptimizerSituation,
+  type PickableElement,
   type SlotId,
   type StatTotals,
   type TurnSpell,
@@ -38,6 +43,8 @@ import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { EffectList, ItemIcon } from "./item-picker";
 import { StatIcon, statTone } from "./stat-icon";
+import { DEFAULT_ITEM_RULES, OptimizerItems, type ItemRules } from "./optimizer-items";
+import { OptimizerSituationPanel, loadOwnedDofus } from "./optimizer-situation";
 import { STUFF_STORAGE_KEY } from "./storage";
 import { RemoteIcon, useBreeds } from "./tags";
 import {
@@ -87,6 +94,8 @@ interface OptimizeResponse {
   minimums: Minimums;
   points: Record<Characteristic, number>;
   slots: Partial<Record<SlotId, number>>;
+  /** Choix des effets spéciaux du stuff (situation simulée). */
+  specials: Record<string, string>;
   damage: number;
   spells: SpellResult[];
   hp: number;
@@ -198,6 +207,97 @@ function NumberField({
   );
 }
 
+/** Un sort de la paire : case à cocher, coût, éléments, et élément choisi s'il frappe au meilleur élément. */
+function SpellChoice({
+  spell,
+  grade,
+  picked,
+  on,
+  element,
+  onToggle,
+  onElement,
+}: {
+  spell: DofusSpell;
+  grade: ReturnType<typeof optimizerGrade> | null;
+  picked: boolean;
+  on: boolean;
+  element: PickableElement;
+  onToggle: () => void;
+  onElement: (element: PickableElement) => void;
+}) {
+  const hits = !!grade && grade.lines.length > 0;
+  const elements = hits ? ([...new Set(grade.lines.map((l) => l.element))] as DofusElement[]) : [];
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 flex-col rounded-md border transition-colors",
+        on ? "border-primary bg-primary/10" : "border-transparent",
+      )}
+    >
+      <button
+        type="button"
+        aria-pressed={on}
+        disabled={!hits}
+        onClick={onToggle}
+        title={hits ? undefined : "Ce sort ne fait pas de dégâts"}
+        className="flex w-full min-w-0 items-center gap-2 rounded-md p-1.5 text-left text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+      >
+        <span
+          className={cn(
+            "flex size-4 shrink-0 items-center justify-center rounded border",
+            on && "border-primary bg-primary text-primary-foreground",
+          )}
+          aria-hidden="true"
+        >
+          {on && <Check className="size-3" />}
+        </span>
+        <RemoteIcon src={spell.icon} className="size-8 shrink-0" />
+        <span className="min-w-0 flex-1 leading-tight">
+          <span className="block truncate font-medium">{spell.name}</span>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            {hits ? (
+              <>
+                {grade.apCost} PA
+                {!picked &&
+                  elements.map((e) => (
+                    <StatIcon key={e} stat={ELEMENTS[e].damage} className="size-3" />
+                  ))}
+                {picked && <span className="text-gold">meilleur élément</span>}
+              </>
+            ) : (
+              "Pas de dégâts"
+            )}
+          </span>
+        </span>
+      </button>
+      {on && picked && (
+        <div
+          className="flex items-center gap-1 px-1.5 pb-1.5"
+          role="radiogroup"
+          aria-label="Élément"
+        >
+          {PICKABLE_ELEMENTS.map((e) => (
+            <button
+              key={e}
+              type="button"
+              role="radio"
+              aria-checked={element === e}
+              onClick={() => onElement(e)}
+              title={ELEMENTS[e].label}
+              className={cn(
+                "flex size-6 items-center justify-center rounded border transition-colors hover:bg-accent",
+                element === e ? "border-gold/60 bg-gold-soft" : "opacity-60",
+              )}
+            >
+              <StatIcon stat={ELEMENTS[e].damage} className="size-3.5" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const range = (r: { min: number; max: number }) =>
   r.min === r.max ? String(r.min) : `${r.min} – ${r.max}`;
 
@@ -213,6 +313,11 @@ export function StuffOptimizer() {
   const [level, setLevel] = React.useState(LEVEL_MAX);
   const [classSpells, setClassSpells] = React.useState<Record<number, DofusSpell[]>>({});
   const [spellIds, setSpellIds] = React.useState<number[]>([]);
+  const [pickElements, setPickElements] = React.useState<Record<number, PickableElement>>({});
+  const [itemRules, setItemRules] = React.useState<ItemRules>(DEFAULT_ITEM_RULES);
+  const [situation, setSituation] = React.useState<OptimizerSituation>(DEFAULT_SITUATION);
+  // Dofus possédés retenus sur cet appareil (affichés une fois la liste chargée).
+  const [ownedDofus, setOwnedDofus] = React.useState<number[] | null>(loadOwnedDofus);
   const [ap, setAp] = React.useState<number>(STAT_CAPS.ap);
   const [exos, setExos] = React.useState<Exos>({ ap: false, mp: false, range: false });
   const [critical, setCritical] = React.useState<"yes" | "no">("yes");
@@ -245,11 +350,28 @@ export function StuffOptimizer() {
       .catch((e: unknown) => setError(e instanceof ApiError ? e.message : "Sorts indisponibles."));
   }, [breedId, classSpells]);
 
-  const damageSpells = (breedId !== null ? (classSpells[breedId] ?? null) : null)?.filter((s) => {
+  /** Grade compté par l'optimiseur (élément choisi pour les lignes « meilleur élément »). */
+  const gradeOf = (s: DofusSpell) => {
     const found = spellGradeAt(s, level);
-    const grade = found ? withoutPickedLines(found) : null;
-    return grade && grade.lines.length > 0;
-  });
+    return found ? optimizerGrade(found, pickElements[s.id] ?? "earth") : null;
+  };
+  const pickedAt = (s: DofusSpell) => {
+    const found = spellGradeAt(s, level);
+    return !!found && hasPickedLines(found);
+  };
+  const allSpells = breedId !== null ? (classSpells[breedId] ?? null) : null;
+  const damageSpells = allSpells?.filter((s) => (gradeOf(s)?.lines.length ?? 0) > 0);
+  // Paires de variantes (sort de base et sa variante), dans l'ordre de la classe.
+  const spellPairs = allSpells
+    ? [
+        ...allSpells
+          .reduce(
+            (m, s) => m.set(s.variant, [...(m.get(s.variant) ?? []), s]),
+            new Map<number, DofusSpell[]>(),
+          )
+          .values(),
+      ].filter((pair) => pair.some((s) => (gradeOf(s)?.lines.length ?? 0) > 0))
+    : null;
   const selected = new Set(spellIds);
   const selectedAp = (damageSpells ?? [])
     .filter((s) => selected.has(s.id))
@@ -259,17 +381,32 @@ export function StuffOptimizer() {
     if (id === breedId) return;
     setBreedId(id);
     setSpellIds([]);
+    setPickElements({});
     setResult(null);
   }
 
-  function toggleSpell(id: number) {
-    setSpellIds((list) =>
-      list.includes(id)
-        ? list.filter((x) => x !== id)
-        : list.length >= OPTIMIZER_SPELLS_MAX
-          ? list
-          : [...list, id],
-    );
+  /** Coche un sort ; sa variante (même emplacement de sort) est décochée. */
+  function toggleSpell(spell: DofusSpell) {
+    if (spellIds.includes(spell.id)) {
+      setSpellIds(spellIds.filter((x) => x !== spell.id));
+      return;
+    }
+    const partner = (allSpells ?? []).find((s) => s.variant === spell.variant && s.id !== spell.id);
+    const list = spellIds.filter((x) => x !== partner?.id);
+    if (list.length >= OPTIMIZER_SPELLS_MAX) return;
+    setSpellIds([...list, spell.id]);
+    // Lignes « meilleur élément » : l'élément le plus présent parmi les sorts cochés.
+    if (pickedAt(spell) && !pickElements[spell.id]) {
+      const counts = new Map<PickableElement, number>();
+      for (const s of (allSpells ?? []).filter((x) => list.includes(x.id))) {
+        for (const l of gradeOf(s)?.lines ?? []) {
+          const e = l.element as PickableElement;
+          if (PICKABLE_ELEMENTS.includes(e)) counts.set(e, (counts.get(e) ?? 0) + 1);
+        }
+      }
+      const best = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "earth";
+      setPickElements((m) => ({ ...m, [spell.id]: best }));
+    }
   }
 
   async function run() {
@@ -280,13 +417,7 @@ export function StuffOptimizer() {
     setResult(null);
     setCells([]);
     const chosenSpells = (damageSpells ?? []).filter((s) => selected.has(s.id));
-    setRunSpells(
-      chosenSpells.map((spell) => ({
-        spell,
-        grade: withoutPickedLines(spellGradeAt(spell, level)!),
-        limit: 1,
-      })),
-    );
+    setRunSpells(chosenSpells.map((spell) => ({ spell, grade: gradeOf(spell)!, limit: 1 })));
     setRunOptions({ attack, critical: critical === "yes", ap });
     const minimums: Minimums = {
       hp: numberOrUndefined(hp),
@@ -310,6 +441,15 @@ export function StuffOptimizer() {
           attack,
           scrolls: Math.min(SCROLL_MAX, Math.max(0, numberOrUndefined(scrolls) ?? 0)),
           minimums,
+          pickElements: Object.fromEntries(
+            chosenSpells.filter(pickedAt).map((s) => [s.id, pickElements[s.id] ?? "earth"]),
+          ),
+          prysmaradites: itemRules.prysmaradites,
+          legendaryItems: itemRules.legendaryItems,
+          forcedItems: itemRules.forced.map((i) => i.id),
+          bannedItems: itemRules.banned.map((i) => i.id),
+          situation,
+          ownedDofus,
         },
       });
       setJob(current);
@@ -361,6 +501,7 @@ export function StuffOptimizer() {
           scrolls: Object.fromEntries(CHARACTERISTICS.map((c) => [c, result.scrolls])),
           breedId: result.breed.id,
           exos: result.exos,
+          specials: result.specials,
           tags: { elements: [], classes: [result.breed.id] },
         }),
       );
@@ -445,52 +586,48 @@ export function StuffOptimizer() {
           </legend>
           {breedId === null ? (
             <p className="text-sm text-muted-foreground">Choisissez d&apos;abord une classe.</p>
-          ) : !damageSpells ? (
+          ) : !spellPairs ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               Chargement des sorts…
             </p>
           ) : (
-            <ul className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {damageSpells.map((s) => {
-                const grade = withoutPickedLines(spellGradeAt(s, level)!);
-                const on = selected.has(s.id);
-                const elements = [...new Set(grade.lines.map((l) => l.element))] as DofusElement[];
-                return (
-                  <li key={s.id}>
-                    <button
-                      type="button"
-                      aria-pressed={on}
-                      onClick={() => toggleSpell(s.id)}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-lg border p-1.5 text-left text-sm transition-colors hover:bg-accent",
-                        on ? "border-primary bg-primary/10" : "bg-card/60",
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "flex size-4 shrink-0 items-center justify-center rounded border",
-                          on && "border-primary bg-primary text-primary-foreground",
+            <>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Chaque case réunit un sort et sa variante : un seul des deux peut être choisi, comme
+                dans la barre de sorts.
+              </p>
+              <ul className="grid gap-1.5 md:grid-cols-2 xl:grid-cols-3">
+                {spellPairs.map((pair) => (
+                  <li
+                    key={pair[0]!.variant}
+                    className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-1 rounded-lg border bg-card/40 p-1"
+                  >
+                    {pair.map((s, i) => (
+                      <React.Fragment key={s.id}>
+                        {i > 0 && (
+                          <span
+                            className="self-center text-[0.65rem] text-muted-foreground"
+                            aria-hidden="true"
+                          >
+                            ou
+                          </span>
                         )}
-                        aria-hidden="true"
-                      >
-                        {on && <Check className="size-3" />}
-                      </span>
-                      <RemoteIcon src={s.icon} className="size-8 shrink-0" />
-                      <span className="min-w-0 flex-1 leading-tight">
-                        <span className="block truncate font-medium">{s.name}</span>
-                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                          {grade.apCost} PA
-                          {elements.map((e) => (
-                            <StatIcon key={e} stat={ELEMENTS[e].damage} className="size-3" />
-                          ))}
-                        </span>
-                      </span>
-                    </button>
+                        <SpellChoice
+                          spell={s}
+                          grade={gradeOf(s)}
+                          picked={pickedAt(s)}
+                          on={selected.has(s.id)}
+                          element={pickElements[s.id] ?? "earth"}
+                          onToggle={() => toggleSpell(s)}
+                          onElement={(e) => setPickElements((m) => ({ ...m, [s.id]: e }))}
+                        />
+                      </React.Fragment>
+                    ))}
                   </li>
-                );
-              })}
-            </ul>
+                ))}
+              </ul>
+            </>
           )}
         </fieldset>
 
@@ -581,7 +718,33 @@ export function StuffOptimizer() {
           </div>
         </fieldset>
 
-        {/* 4. Calcul */}
+        {/* 4. Objets */}
+        <fieldset>
+          <legend className="mb-2 text-sm font-medium">
+            4. Objets du stuff{" "}
+            <span className="font-normal text-muted-foreground">(facultatif)</span>
+          </legend>
+          <OptimizerItems level={level} value={itemRules} onChange={setItemRules} />
+        </fieldset>
+
+        {/* 5. Situation de combat */}
+        <fieldset>
+          <legend className="mb-2 text-sm font-medium">
+            5. Situation de combat{" "}
+            <span className="font-normal text-muted-foreground">
+              (bonus des Dofus, Prysmaradites et légendaires ; la légende animale s&apos;ajoute
+              ensuite dans le simulateur)
+            </span>
+          </legend>
+          <OptimizerSituationPanel
+            situation={situation}
+            onSituation={setSituation}
+            owned={ownedDofus}
+            onOwned={setOwnedDofus}
+          />
+        </fieldset>
+
+        {/* 6. Calcul */}
         <div className="flex flex-wrap items-end gap-4">
           <div className="grid gap-1">
             <span className="text-sm font-medium">Critiques</span>

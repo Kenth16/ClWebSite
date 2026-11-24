@@ -81,7 +81,10 @@ export function ItemPicker({
   current,
   onPick,
   onRemove,
+  description = "Recherchez un objet, filtrez par caractéristique, puis cliquez dessus pour l'équiper.",
 }: {
+  /** Texte d'aide sous le titre. */
+  description?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   slotLabel: string;
@@ -148,10 +151,7 @@ export function ItemPicker({
       <DialogContent className="max-w-6xl gap-4">
         <div>
           <DialogTitle>{slotLabel}</DialogTitle>
-          <DialogDescription className="mt-1">
-            Recherchez un objet, filtrez par caractéristique, puis cliquez dessus pour
-            l&apos;équiper.
-          </DialogDescription>
+          <DialogDescription className="mt-1">{description}</DialogDescription>
         </div>
 
         {current && (

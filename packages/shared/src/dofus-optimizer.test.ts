@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { STATS, type DofusItem, type DofusSet, type DofusSpell, type StatKey, type StatTotals } from "./dofus";
+import {
+  STATS,
+  type DofusItem,
+  type DofusSet,
+  type DofusSpell,
+  type StatKey,
+  type StatTotals,
+} from "./dofus";
 import {
   allocatePoints,
   bestCombo,
@@ -76,6 +83,24 @@ describe("recherche de stuff", () => {
     });
     expect(r.slots.hat).toBe(2);
     expect(new Set([r.slots.ring1, r.slots.ring2])).toEqual(new Set([4, 5]));
+  });
+
+  it("garde les objets imposés à leur place", () => {
+    const r = optimizeStuff({
+      level: 100,
+      weights,
+      items: [
+        item(1, "hat", { strength: 50 }),
+        item(2, "hat", { strength: 80 }),
+        item(4, "ring", { strength: 40 }),
+        item(5, "ring", { strength: 30 }),
+        item(6, "ring", { strength: 1 }),
+      ],
+      sets: [],
+      forced: [1, 6],
+    });
+    expect(r.slots.hat).toBe(1);
+    expect(new Set([r.slots.ring1, r.slots.ring2])).toEqual(new Set([6, 4]));
   });
 
   it("préfère une panoplie quand son bonus vaut plus que les objets seuls", () => {

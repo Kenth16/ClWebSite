@@ -14,9 +14,15 @@ import {
   rotationDamage,
   simplifyCriteria,
   spellGradeAt,
-  withoutPickedLines,
+  LEGENDARY_ITEM_IDS,
+  optimizerChoices,
+  scenarioBuffs,
+  specialEffectOf,
+  SLOTS,
+  optimizerGrade,
   type Characteristic,
   type DofusBreed,
+  type DofusItem,
   type OptimizeRequest,
   type SlotId,
   type StatKey,
@@ -172,6 +178,8 @@ export class OptimizeJobs {
   private async optimize(request: OptimizeRequest, job: Job) {
     const { progress, trace } = job;
     const { breedId, level, ap, exos, critical, attack, scrolls, minimums } = request;
+    const { forcedItems: forced, bannedItems, prysmaradites, legendaryItems } = request;
+    const { situation, ownedDofus } = request;
     const [breeds, classSpells, equipment, sets] = await Promise.all([
       this.spells.breeds(),
       this.spells.spells(breedId),
@@ -180,20 +188,46 @@ export class OptimizeJobs {
     ]);
     // Conditions des objets (DofusDB) : caractéristiques, panoplies actives, classe.
     const criteria = await this.spells.itemCriteria(equipment.map((i) => i.id));
-    const items = equipment.map((item) => {
+    // Objets écartés par le joueur : interdits, Prysmaradites, équipements légendaires.
+    const banned = new Set(bannedItems);
+    const allowed = (item: (typeof equipment)[number]) =>
+      forced.includes(item.id) ||
+      (!banned.has(item.id) &&
+        (prysmaradites || !/prysmaradite/i.test(item.type)) &&
+        (legendaryItems || !LEGENDARY_ITEM_IDS.has(item.id)) &&
+        (ownedDofus === null || item.type !== "Dofus" || ownedDofus.includes(item.id)));
+    const items = equipment.filter(allowed).map((item) => {
       const tree = parseCriteria(criteria.get(item.id));
       return { ...item, criteria: tree ? simplifyCriteria(tree, { breedId }) : null };
     });
+    checkForced(forced, items, level);
+    // Bonus de combat (Ocre, Vulbis, légendaires…) dans la situation simulée.
+    // PA, PM et PO gagnés en combat (Ocre…) ne comptent pas : le stuff doit atteindre
+    // seul les PA visés, et ils n'augmentent pas les dégâts de la rotation choisie.
+    const buffs = scenarioBuffs(items, situation);
+    for (const [id, b] of buffs) {
+      const rest = { ...b };
+      delete rest.ap;
+      delete rest.mp;
+      delete rest.range;
+      if (Object.keys(rest).length > 0) buffs.set(id, rest);
+      else buffs.delete(id);
+    }
     const breed: DofusBreed | undefined = breeds.find((b) => b.id === breedId);
     if (!breed) throw new HttpError(404, "Classe inconnue.");
 
-    // Sorts choisis : grade disponible au niveau, avec des dégâts.
+    // Sorts choisis : grade disponible au niveau, avec des dégâts. Les lignes
+    // « meilleur / pire élément » frappent dans l'élément choisi par le joueur.
     const spells: TurnSpell[] = [];
+    const variants = new Set<number>();
     for (const spell of classSpells) {
       if (!request.spellIds.includes(spell.id)) continue;
-      // Lignes « meilleur / pire élément » : pas encore gérées par la preuve.
+      if (variants.has(spell.variant)) {
+        throw new HttpError(422, "Un sort et sa variante ne peuvent pas être choisis ensemble.");
+      }
+      variants.add(spell.variant);
       const found = spellGradeAt(spell, level);
-      const grade = found ? withoutPickedLines(found) : null;
+      const grade = found ? optimizerGrade(found, request.pickElements[spell.id]) : null;
       if (grade && grade.lines.length > 0) spells.push({ spell, grade, limit: 1 });
     }
     if (spells.length === 0) {
@@ -240,8 +274,17 @@ export class OptimizeJobs {
       critical,
       pointsBudget,
       minimums: mins,
+      forced,
+      buffs,
     });
     trace.funnel = model.funnel;
+    if (model.missingForced.length > 0) {
+      const names = model.missingForced.map((id) => items.find((i) => i.id === id)?.name ?? id);
+      throw new HttpError(
+        422,
+        `Objet imposé impossible à porter avec cette classe : ${names.join(", ")}.`,
+      );
+    }
     const allocations: Partial<Record<StatKey, number>>[] = [];
     const elementStats = elementCharacteristics(elements);
     allocations.push(allocatePoints(level, elementStats));
@@ -266,6 +309,8 @@ export class OptimizeJobs {
         base: withPoints,
         items,
         sets,
+        forced,
+        buffs,
         objective: (total) => {
           // Exigences non remplies : très pénalisées, pour que la recherche s'en écarte.
           let shortfall = 0;
@@ -304,6 +349,8 @@ export class OptimizeJobs {
       critical,
       pointsBudget,
       minimums: mins,
+      forced,
+      buffs,
       initial: start?.slots,
       initialPoints: start?.points,
       workers: defaultWorkers(),
@@ -357,6 +404,13 @@ export class OptimizeJobs {
       items: chosen,
       sets: usedSets,
       exos,
+      // Mêmes bonus que le solveur (moyenne des tours comprise, sans PA/PM/PO de combat).
+      buffs: chosen.reduce<Partial<Record<StatKey, number>>>((sum, i) => {
+        for (const [k, v] of Object.entries(buffs.get(i.id) ?? {}) as [StatKey, number][]) {
+          sum[k] = (sum[k] ?? 0) + v;
+        }
+        return sum;
+      }, {}),
     });
     const totals = { ...character.totals };
     if (!critical) totals.critical = -1000;
@@ -382,8 +436,15 @@ export class OptimizeJobs {
       attack,
       scrolls,
       minimums,
+      situation,
       points,
       slots,
+      /** Choix des effets spéciaux du stuff (situation simulée), pour le simulateur. */
+      specials: Object.fromEntries(
+        Object.entries(optimizerChoices(situation)).filter(([key]) =>
+          chosen.some((i) => specialEffectOf(i)?.key === key),
+        ),
+      ),
       damage: perSpell.reduce((sum, s) => sum + s.average, 0),
       spells: perSpell,
       hp: character.hp,
@@ -402,4 +463,36 @@ export class OptimizeJobs {
       },
     };
   }
+}
+
+/**
+ * Objets imposés : connus, portables à ce niveau, et pas plus que d'emplacements
+ * dans leur famille (une seule Prysmaradite).
+ */
+function checkForced(
+  forced: readonly number[],
+  items: readonly Pick<DofusItem, "id" | "name" | "level" | "family" | "type">[],
+  level: number,
+) {
+  const perFamily = new Map<string, number>();
+  let prysmas = 0;
+  for (const id of forced) {
+    const item = items.find((i) => i.id === id);
+    if (!item || !item.family) throw new HttpError(422, "Objet imposé inconnu.");
+    if (item.level > level) {
+      throw new HttpError(
+        422,
+        `${item.name} est de niveau ${item.level} : trop haut pour ce niveau.`,
+      );
+    }
+    perFamily.set(item.family, (perFamily.get(item.family) ?? 0) + 1);
+    if (/prysmaradite/i.test(item.type)) prysmas++;
+  }
+  for (const [family, n] of perFamily) {
+    if (n > SLOTS.filter((s) => s.family === family).length) {
+      throw new HttpError(422, "Trop d'objets imposés pour le même emplacement.");
+    }
+  }
+  if (prysmas > 1) throw new HttpError(422, "Une seule Prysmaradite peut être imposée.");
+  if (new Set(forced).size !== forced.length) throw new HttpError(422, "Objet imposé en double.");
 }
