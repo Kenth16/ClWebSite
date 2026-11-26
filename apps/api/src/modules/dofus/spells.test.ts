@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DofusDbClient, appliesOnCast, normalizeGrade } from "./spells";
+import { DofusDbClient, appliesOnCast, buffLines, normalizeGrade, spellCharges } from "./spells";
 
 function level(id: number, spellId: number, grade: number, minPlayerLevel: number) {
   return {
@@ -121,5 +121,179 @@ describe("sorts Dofus (DofusDB)", () => {
     expect(normalizeGrade({ ...base, effects: [poison, ally] }).lines).toEqual([
       { element: "fire", kind: "damage", min: 7, max: 8, condition: "triggered" },
     ]);
+  });
+
+  describe("charges et boosts", () => {
+    const base = {
+      id: 1,
+      grade: 1,
+      minPlayerLevel: 1,
+      apCost: 3,
+      minRange: 0,
+      range: 4,
+      criticalHitProbability: 10,
+    };
+    const boost = (spell: number, value: number, extra = {}) => ({
+      effectId: 293,
+      diceNum: spell,
+      diceSide: 0,
+      value,
+      duration: 3,
+      targetMask: "c",
+      triggers: "I",
+      ...extra,
+    });
+
+    it("lit les charges d'un sort qui se renforce lui-même (Accumulation)", () => {
+      const hit = { effectId: 97, diceNum: 19, diceSide: 22, targetMask: "g,A", triggers: "I" };
+      const grade = normalizeGrade({
+        ...base,
+        spellId: 13138,
+        maxStack: 1,
+        effects: [hit, boost(13138, 20)],
+      });
+      expect(grade.charges).toEqual({ steps: [{ at: 1, bonus: 20 }], unit: "charge" });
+      expect(grade.lines).toEqual([{ element: "earth", kind: "damage", min: 19, max: 22 }]);
+    });
+
+    it("liste quelques charges quand le cumul est illimité", () => {
+      const raw = {
+        ...base,
+        spellId: 7,
+        maxStack: -1,
+        effects: [boost(7, 18, { targetMask: "C" })],
+      };
+      expect(spellCharges(raw)).toEqual({
+        steps: [18, 36, 54, 72, 90].map((bonus, i) => ({ at: i + 1, bonus })),
+        unit: "charge",
+        unlimited: true,
+      });
+    });
+
+    it("cumule les bonus différés tour par tour (Flèche Punitive)", () => {
+      const raw = {
+        ...base,
+        spellId: 8,
+        maxStack: 1,
+        effects: [boost(8, 17, { delay: 1 }), boost(8, 25, { delay: 2 })],
+      };
+      expect(spellCharges(raw)).toEqual({
+        steps: [
+          { at: 1, bonus: 17 },
+          { at: 2, bonus: 42 },
+        ],
+        unit: "turn",
+      });
+    });
+
+    it("ne garde que les paliers d'attente qui apportent un bonus (Colère de Iop)", () => {
+      const raw = { ...base, spellId: 6, maxStack: 1, effects: [boost(6, 110, { delay: 3 })] };
+      expect(spellCharges(raw)).toEqual({ steps: [{ at: 3, bonus: 110 }], unit: "turn" });
+    });
+
+    it("ignore les bonus vers un autre sort ou sous état", () => {
+      const raw = (effects: ReturnType<typeof boost>[]) => ({
+        ...base,
+        spellId: 9,
+        maxStack: 1,
+        effects,
+      });
+      expect(spellCharges(raw([boost(10, 20)]))).toBeNull();
+      expect(spellCharges(raw([boost(9, 6, { targetMask: "C,*E498" })]))).toBeNull();
+      expect(spellCharges(raw([boost(9, 3, { triggers: "TB" })]))).toBeNull();
+    });
+
+    it("lit les boosts de caractéristiques pour le lanceur et les alliés (Puissance)", () => {
+      expect(
+        buffLines([
+          {
+            effectId: 138,
+            diceNum: 300,
+            diceSide: 0,
+            duration: 3,
+            targetMask: "a,A",
+            triggers: "I",
+          },
+          {
+            effectId: 414,
+            diceNum: 120,
+            diceSide: 0,
+            duration: 3,
+            targetMask: "a,A",
+            triggers: "I",
+          },
+          { effectId: 97, diceNum: 10, diceSide: 12, targetMask: "A" },
+        ]),
+      ).toEqual([
+        { stat: "power", min: 300, max: 300, duration: 3 },
+        { stat: "pushbackDamage", min: 120, max: 120, duration: 3 },
+      ]);
+    });
+
+    it("repère les boosts sous condition et écarte ceux qui ne visent que des ennemis", () => {
+      expect(
+        buffLines([
+          { effectId: 118, diceNum: 200, diceSide: 0, duration: 2, targetMask: "C,E5262" },
+          { effectId: 138, diceNum: 150, diceSide: 0, duration: 1, targetMask: "a", delay: 1 },
+          { effectId: 128, diceNum: 1, diceSide: 0, duration: 1, targetMask: "A" },
+          { effectId: 115, diceNum: 3, diceSide: 18, duration: 3, targetMask: "C" },
+        ]),
+      ).toEqual([
+        { stat: "strength", min: 200, max: 200, duration: 2, condition: "conditional" },
+        { stat: "power", min: 150, max: 150, duration: 1, condition: "delayed" },
+        { stat: "critical", min: 3, max: 18, duration: 3 },
+      ]);
+    });
+  });
+
+  it("cherche les monstres sans tenir compte des majuscules et lit leurs résistances", async () => {
+    const urls: string[] = [];
+    const client = new DofusDbClient({
+      baseUrl: "https://dofusdb.test",
+      fetch: (async (input: string | URL | Request) => {
+        urls.push(decodeURIComponent(String(input)));
+        return new Response(
+          JSON.stringify({
+            total: 2,
+            data: [
+              {
+                id: 36,
+                name: { fr: "Bouftou" },
+                gfxId: 3,
+                isBoss: false,
+                grades: [
+                  {
+                    grade: 1,
+                    level: 1,
+                    lifePoints: 29,
+                    reductionFire: -12,
+                    reductionNeutral: 25,
+                    reductionEarthFlat: 3,
+                    criticalDamageReduction: 2,
+                    pushDamageReduction: 1,
+                  },
+                ],
+              },
+              { id: 37, name: { fr: "Caché" }, hideInBestiary: true, grades: [{ grade: 1 }] },
+            ],
+          }),
+        );
+      }) as typeof fetch,
+    });
+    const monsters = await client.monsters("bouf(t");
+    expect(urls[0]).toContain("name.fr[$regex]=(?i)bouf\\(t");
+    expect(monsters).toHaveLength(1);
+    expect(monsters[0]!.icon).toBe("https://dofusdb.test/img/monsters/3.png");
+    expect(monsters[0]!.grades[0]).toEqual({
+      grade: 1,
+      level: 1,
+      hp: 29,
+      resistances: {
+        pct: { neutral: 25, earth: 0, fire: -12, water: 0, air: 0 },
+        flat: { neutral: 0, earth: 3, fire: 0, water: 0, air: 0 },
+        critical: 2,
+      },
+      pushback: 1,
+    });
   });
 });

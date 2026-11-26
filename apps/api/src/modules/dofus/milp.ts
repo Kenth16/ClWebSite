@@ -44,6 +44,15 @@ export interface MilpInput extends DamageModelInput {
   onProgress?: (progress: MilpProgress) => void;
   /** Appelé à la fin de chaque cellule (explication, débogage). */
   onCell?: (cell: CellTrace) => void;
+  /** Nombre de stuffs différents à garder parmi ceux rencontrés (1 par défaut). */
+  keep?: number;
+}
+
+/** Un stuff rencontré pendant la recherche. */
+export interface FoundStuff {
+  slots: Partial<Record<SlotId, number>>;
+  points: Partial<Record<StatKey, number>>;
+  damage: number;
 }
 
 /** Plage d'une cellule : % dommages (mêlée ou distance) et % critique. */
@@ -84,6 +93,12 @@ export interface MilpProgress {
 }
 
 export interface MilpResult {
+  /**
+   * Meilleurs stuffs différents rencontrés, du meilleur au moins bon (au plus
+   * `keep`). Le premier est l'optimum s'il est prouvé ; les suivants sont les
+   * meilleurs autres stuffs vus pendant la recherche, sans garantie de rang.
+   */
+  found: FoundStuff[];
   slots: Partial<Record<SlotId, number>>;
   /** Points de caractéristique choisis (si l'optimiseur les répartit). */
   points: Partial<Record<StatKey, number>>;
@@ -277,10 +292,24 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       for (const line of p.lines) {
         const rc = line.crit === null ? line.normal : Math.max(line.crit, line.normal);
         const a = (1 - pBar) * line.normal + pBar * rc;
-        constant += factor * a;
-        coef[line.stat]! += (factor * a) / 100;
-        coef[line.damage]! += factor;
-        if (withCrit && line.crit !== null && cell.cdPositive) coef[CRIT_DMG]! += factor * pBar;
+        // Part qui passe les % de résistance de la cible (1 sans cible).
+        const m = model.resistMul(line.element);
+        constant += m * factor * a;
+        coef[line.stat]! += (m * factor * a) / 100;
+        coef[line.damage]! += m * factor;
+        if (withCrit && line.crit !== null && cell.cdPositive) {
+          coef[CRIT_DMG]! += m * factor * pBar;
+        }
+        // Résistances fixes : retirées seulement si négatives (faiblesse : dégâts en
+        // plus). Positives, on ne les retire pas : la borne reste au-dessus des vrais
+        // dégâts même quand un coup est entièrement absorbé.
+        if (model.target) {
+          const flat = model.target.flat[line.element] ?? 0;
+          if (flat < 0) constant += m * casts * -flat;
+          if (withCrit && line.crit !== null && model.target.critical < 0) {
+            constant += m * casts * pBar * -model.target.critical;
+          }
+        }
       }
     }
     // La base s'ajoute à la constante.
@@ -440,38 +469,61 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     return bonuses[tier] ?? [];
   };
   /** Total d'une caractéristique : termes (objets, panoplies), constante, ampleur maximale. */
+  /**
+   * Total d'une caractéristique : termes (objets, panoplies, points), constante,
+   * et bornes de la partie variable sur tous les stuffs possibles (emplacements
+   * respectés : les k meilleurs ou pires objets de chaque famille).
+   */
   function statExpression(stat: StatKey, combat = false) {
     const terms: string[] = [];
-    let size = 0;
+    let lo = 0;
+    let hi = 0;
+    const byFamily = new Map<SlotFamily, number[]>();
     for (const x of cands) {
       const w =
         rawStat(itemById.get(x.c.id)?.effects ?? [], stat) +
         (combat ? (input.buffs?.get(x.c.id)?.[stat] ?? 0) : 0);
       if (w !== 0) {
         terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${x.var}`);
-        size += Math.abs(w);
+        byFamily.set(x.family, [...(byFamily.get(x.family) ?? []), w]);
       }
     }
+    for (const [family, values] of byFamily) {
+      const k = model.slotsOf(family);
+      values.sort((a, b) => a - b);
+      lo += values
+        .filter((v) => v < 0)
+        .slice(0, k)
+        .reduce((a, b) => a + b, 0);
+      hi += values
+        .filter((v) => v > 0)
+        .slice(-k)
+        .reduce((a, b) => a + b, 0);
+    }
     for (const s of sets) {
-      let largest = 0;
+      // Une seule variable de palier vaut 1 par panoplie.
+      let least = 0;
+      let most = 0;
       s.tiers.forEach((_, n) => {
         const w = rawStat(setBonusAt(s.set, n), stat);
         if (w !== 0) terms.push(`${w >= 0 ? "+" : "-"} ${fmt(Math.abs(w))} ${s.var}_${n}`);
-        largest = Math.max(largest, Math.abs(w));
+        least = Math.min(least, w);
+        most = Math.max(most, w);
       });
-      size += largest;
+      lo += least;
+      hi += most;
     }
     for (const pv of pointVars) {
       if (pv.stat !== stat) continue;
       terms.push(`+ ${pv.var}`);
-      size += pv.width;
+      hi += pv.width;
     }
-    return { terms, constant: input.base[stat] ?? 0, size };
+    return { terms, constant: input.base[stat] ?? 0, lo, hi };
   }
   /** Nombre de panoplies au bonus actif : Σ (1 − u_0 − u_1). */
   function activeSetsExpression() {
     const terms = sets.flatMap((s) => [`- ${s.var}_0`, `- ${s.var}_1`]);
-    return { terms, constant: sets.length, size: sets.length };
+    return { terms, constant: sets.length, lo: -sets.length, hi: 0 };
   }
   let orCount = 0;
   function encode(tree: CriteriaTree, active: string, name: string) {
@@ -495,30 +547,38 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       case "stat":
       case "sets": {
         if (tree.op === "!") return; // « différent de » : rare, laissé de côté
-        const { terms, constant, size } =
+        const { terms, constant, lo, hi } =
           tree.kind === "stat" ? statExpression(tree.stat) : activeSetsExpression();
-        const bigM = size + Math.abs(constant) + Math.abs(tree.value) + 2;
+        // « Si actif, alors total ≤ / ≥ limite » ; inactif, la ligne doit rester vraie
+        // pour tout stuff : la constante M est l'écart à la borne du total, pas plus
+        // (une M trop grande rend la relaxation continue presque sans effet).
         if (tree.op === "<" || tree.op === "=") {
           const limit = tree.op === "<" ? tree.value - 1 : tree.value;
-          common.push(
-            row(
-              `${name}_le`,
-              [...terms, `+ ${fmt(bigM)} ${active}`],
-              "<=",
-              limit - constant + bigM,
-            ),
-          );
+          const bigM = constant + hi - limit;
+          if (bigM > 0) {
+            common.push(
+              row(
+                `${name}_le`,
+                [...terms, `+ ${fmt(bigM)} ${active}`],
+                "<=",
+                limit - constant + bigM,
+              ),
+            );
+          }
         }
         if (tree.op === ">" || tree.op === "=") {
           const limit = tree.op === ">" ? tree.value + 1 : tree.value;
-          common.push(
-            row(
-              `${name}_ge`,
-              [...terms, `- ${fmt(bigM)} ${active}`],
-              ">=",
-              limit - constant - bigM,
-            ),
-          );
+          const bigM = limit - constant - lo;
+          if (bigM > 0) {
+            common.push(
+              row(
+                `${name}_ge`,
+                [...terms, `- ${fmt(bigM)} ${active}`],
+                ">=",
+                limit - constant - bigM,
+              ),
+            );
+          }
         }
         return;
       }
@@ -658,6 +718,30 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
 
   // ── Recherche par cellules ──────────────────────────────────────────────
   let bestDamage = -Infinity;
+  // Meilleurs stuffs différents rencontrés (mêmes objets : un seul, le meilleur).
+  const keep = Math.max(1, input.keep ?? 1);
+  const foundStuffs: FoundStuff[] = [];
+  const stuffKey = (slots: Partial<Record<SlotId, number>>) =>
+    Object.values(slots)
+      .filter((id): id is number => id !== undefined)
+      .sort((a, b) => a - b)
+      .join(",");
+  function remember(
+    slots: Partial<Record<SlotId, number>>,
+    points: Partial<Record<StatKey, number>>,
+    damage: number,
+  ) {
+    if (!Number.isFinite(damage)) return;
+    const key = stuffKey(slots);
+    const same = foundStuffs.findIndex((f) => stuffKey(f.slots) === key);
+    if (same >= 0) {
+      if (foundStuffs[same]!.damage >= damage) return;
+      foundStuffs.splice(same, 1);
+    }
+    foundStuffs.push({ slots: { ...slots }, points: { ...points }, damage });
+    foundStuffs.sort((a, b) => b.damage - a.damage);
+    foundStuffs.length = Math.min(foundStuffs.length, keep);
+  }
   let bestSlots: Partial<Record<SlotId, number>> = {};
   let bestPoints: Partial<Record<StatKey, number>> = {};
   // Le stuff de départ ne sert que s'il respecte toutes les conditions et exigences.
@@ -670,13 +754,15 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
     bestDamage = model.evaluateSlots(input.initial, input.initialPoints);
     bestSlots = { ...input.initial };
     bestPoints = { ...(input.initialPoints ?? {}) };
+    remember(bestSlots, bestPoints, bestDamage);
   }
 
   // Cellules les plus prometteuses d'abord (borne de la cellule mère la plus haute).
   const queue: Cell[] = (withCrit ? [true, false] : [true]).map((cdPositive) => ({
     pctLo: pctDims.map((d) => extreme(d, -1)),
     pctHi: pctDims.map((d) => extreme(d, 1)),
-    critLo: withCrit ? extreme(CRIT, -1) : 0,
+    // Critique minimum exigé (100 % de critique) : la cellule démarre au seuil.
+    critLo: withCrit ? Math.max(extreme(CRIT, -1), input.minimums?.critical ?? -Infinity) : 0,
     critHi: withCrit ? Math.min(extreme(CRIT, 1), critCap) : 0,
     finLo: FINAL >= 0 ? extreme(FINAL, -1) : 0,
     finHi: FINAL >= 0 ? extreme(FINAL, 1) : 0,
@@ -859,6 +945,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
       const picked = stuff.picked;
       // Chaque stuff trouvé est évalué avec la vraie formule.
       const value = model.objective(gearOf(picked), model.pointsVec(stuff.points));
+      remember(slotsFromSolution(picked), stuff.points, value);
       found = Math.max(found ?? -Infinity, value);
       bound = Math.max(bound, upper);
       if (value > bestDamage) {
@@ -985,6 +1072,7 @@ export async function optimizeTurnDamageMilp(input: MilpInput): Promise<MilpResu
   if (timeUp && queue.some((c) => c.upper > bestDamage + eps)) proven = false;
 
   return {
+    found: foundStuffs,
     slots: bestSlots,
     points: bestPoints,
     damage: bestDamage,

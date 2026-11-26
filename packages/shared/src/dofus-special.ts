@@ -706,6 +706,13 @@ export interface OptimizerSituation {
 
 export const DEFAULT_SITUATION: OptimizerSituation = { turn: "odd", fight: "short" };
 
+/**
+ * Coups critiques : pondérés par la chance de critique, toujours (le stuff doit
+ * atteindre 100 % de critique, aucune part d'aléatoire) ou jamais.
+ */
+export const OPTIMIZER_CRIT_MODES = ["weighted", "always", "never"] as const;
+export type OptimizerCritMode = (typeof OPTIMIZER_CRIT_MODES)[number];
+
 /** Hypothèses de la situation, selon la durée du combat (rappel affiché au joueur). */
 export function situationSummary(fight: OptimizerFight): { label: string; value: string }[] {
   return fight === "short"
@@ -714,15 +721,26 @@ export function situationSummary(fight: OptimizerFight): { label: string; value:
         { label: "Ennemis en vie", value: "Tous (Oto Mustam, Amayiro au maximum)" },
         { label: "PV au-dessus de 50 %", value: "Oui (Trompe-la-Mort)" },
         { label: "Premiers tours", value: "Nébuleux, Surpryz, Prynyang selon le tour" },
-        { label: "Cumuls", value: "Turquoise 4 ; Pourpre et autres : aucun" },
+        {
+          label: "Cumuls",
+          value: "Turquoise 2 (T1) ou 5 (T2) ; Pourpre 0 ou 1 ; Domakuro 0 ou +16 Dommages",
+        },
+        { label: "Audace de Dodge", value: "Déplacé (+10 % Critique)" },
         { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
       ]
     : [
         { label: "Touché ce tour", value: "Parfois (Vulbis à moitié : +5 %)" },
         { label: "Ennemis en vie", value: "60 % du bonus (Oto Mustam, Amayiro)" },
         { label: "PV au-dessus de 50 %", value: "Non (pas de Trompe-la-Mort)" },
-        { label: "Premiers tours", value: "Non comptés (Nébuleux, Prysmaradites)" },
-        { label: "Cumuls", value: "Au maximum (Brâm, Pourpre, Turquoise, Sylvestre…)" },
+        {
+          label: "Premiers tours",
+          value: "Nébuleux en moyenne (+5 %) ; Prysmaradites non comptées",
+        },
+        {
+          label: "Cumuls",
+          value: "Turquoise 7, Pourpre 3, Domakuro +32 ; les autres au maximum (Brâm, Sylvestre…)",
+        },
+        { label: "Audace de Dodge", value: "Déplacé (+10 % Critique)" },
         { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
       ];
 }
@@ -734,7 +752,7 @@ const SHORT_CHOICES: SpecialChoices = {
   "oto-mustam": "x4",
   amayiro: "x4",
   "trompe-la-mort": "high",
-  turquoise: "x4",
+  dodge: "moved",
 };
 /** Combat court : effets qui dépendent du tour (impair = tour 1, pair = tour 2). */
 const SHORT_TURN_CHOICES: Record<string, { odd: string; even: string }> = {
@@ -743,6 +761,12 @@ const SHORT_TURN_CHOICES: Record<string, { odd: string; even: string }> = {
   "mille-lieues": { odd: "odd", even: SPECIAL_NONE },
   surpryz: { odd: "t1", even: "t2" },
   prynyang: { odd: "t1", even: "t2" },
+  // Cumuls qui montent dès les premiers tours : Turquoise à chaque critique,
+  // Pourpre à chaque attaque subie (pas encore touché au tour 1).
+  turquoise: { odd: "x2", even: "x5" },
+  pourpre: { odd: SPECIAL_NONE, even: "x1" },
+  // Domakuro : rien au tour 1, +16 Dommages au tour 2.
+  domakuro: { odd: SPECIAL_NONE, even: "x2" },
 };
 /** Combat long : moins d'ennemis en vie (60 % du bonus), cumuls au maximum. */
 const LONG_CHOICES: SpecialChoices = {
@@ -750,14 +774,22 @@ const LONG_CHOICES: SpecialChoices = {
   vulbis: "safe",
   "oto-mustam": "x2",
   amayiro: "x2",
-  turquoise: "x10",
-  pourpre: "x10",
+  turquoise: "x7",
+  pourpre: "x3",
+  dodge: "moved",
   dofoozbz: "x10",
-  domakuro: "x8",
+  domakuro: "x4",
   misere: "x4",
   jhessica: "x4",
   bram: "x5",
   sylvestre: "x12",
+};
+/**
+ * Combat long : effets qui alternent d'un tour à l'autre, comptés en moyenne
+ * (Nébuleux : +20 % puis −10 %, soit +5 %).
+ */
+const LONG_TURN_CHOICES: Record<string, { odd: string; even: string }> = {
+  nebuleux: { odd: "odd", even: "even" },
 };
 /** Combat long : bonus comptés en partie (pas touché un tour sur deux). */
 const LONG_SCALE: Record<string, number> = { ocre: 0.5, vulbis: 0.5 };
@@ -769,15 +801,26 @@ const LONG_SCALE: Record<string, number> = { ocre: 0.5, vulbis: 0.5 };
 export function optimizerChoices(
   situation: OptimizerSituation,
   turn: "odd" | "even" = situation.turn === "even" ? "even" : "odd",
+  crit: OptimizerCritMode = "weighted",
 ): SpecialChoices {
-  if (situation.fight === "long") {
-    const choices = { ...LONG_CHOICES };
-    for (const key of Object.keys(LONG_SCALE)) delete choices[key];
-    return choices;
-  }
+  return withCritMode(situation.fight === "long" ? longChoices(false) : shortChoices(turn), crit);
+}
+
+function shortChoices(turn: "odd" | "even"): SpecialChoices {
   const choices: SpecialChoices = { ...SHORT_CHOICES };
   for (const [key, byTurn] of Object.entries(SHORT_TURN_CHOICES)) choices[key] = byTurn[turn];
   return choices;
+}
+/** Combat long ; sans les bonus comptés en partie si `scaled` est faux (simulateur). */
+function longChoices(scaled: boolean): SpecialChoices {
+  const choices = { ...LONG_CHOICES };
+  if (!scaled) for (const key of Object.keys(LONG_SCALE)) delete choices[key];
+  return choices;
+}
+/** Sans critique, le Turquoise ne cumule jamais. */
+function withCritMode(choices: SpecialChoices, crit: OptimizerCritMode): SpecialChoices {
+  if (crit !== "never" || !("turquoise" in choices)) return choices;
+  return { ...choices, turquoise: SPECIAL_NONE };
 }
 
 /**
@@ -787,12 +830,19 @@ export function optimizerChoices(
 export function scenarioBuffs(
   items: readonly { id: number }[],
   situation: OptimizerSituation = DEFAULT_SITUATION,
+  crit: OptimizerCritMode = "weighted",
 ): Map<number, Partial<Record<StatKey, number>>> {
   const out = new Map<number, Partial<Record<StatKey, number>>>();
   const long = situation.fight === "long";
-  const odd = long ? LONG_CHOICES : optimizerChoices(situation, "odd");
-  const even = long ? LONG_CHOICES : optimizerChoices(situation, "even");
-  const average = !long && situation.turn === "average";
+  const longTurn = (turn: "odd" | "even") => {
+    const choices = longChoices(true);
+    for (const [key, byTurn] of Object.entries(LONG_TURN_CHOICES)) choices[key] = byTurn[turn];
+    return choices;
+  };
+  const odd = withCritMode(long ? longTurn("odd") : shortChoices("odd"), crit);
+  const even = withCritMode(long ? longTurn("even") : shortChoices("even"), crit);
+  // Combat long : toujours la moyenne des tours (seuls les effets alternés diffèrent).
+  const average = long || situation.turn === "average";
   for (const item of items) {
     const scale = long ? (LONG_SCALE[specialEffectOf(item)?.key ?? ""] ?? 1) : 1;
     const a = specialBuffs([item], situation.turn === "even" && !long ? even : odd);

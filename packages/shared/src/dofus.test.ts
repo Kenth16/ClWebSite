@@ -21,6 +21,8 @@ import {
   type DofusSet,
   type DofusSpell,
   optimizerGrade,
+  withChargeBonus,
+  applyTarget,
   type SpellGrade,
 } from "./dofus";
 
@@ -247,6 +249,30 @@ describe("calcul des dégâts des sorts", () => {
       },
     ],
   };
+
+  it("ajoute le bonus des charges aux jets de base, critiques compris", () => {
+    const grade = spellGradeAt(glacee, 200)!;
+    expect(withChargeBonus(grade, 0)).toBe(grade);
+    const charged = withChargeBonus(grade, 20);
+    expect(charged.lines[0]).toMatchObject({ min: 41, max: 44 });
+    expect(charged.criticalLines[0]).toMatchObject({ min: 45, max: 49 });
+    // Chance 200 : × 3, comme les jets de base.
+    expect(computeSpellDamage(totals, charged).lines[0]!.normal).toEqual({ min: 123, max: 132 });
+  });
+
+  it("applique les résistances de la cible : fixes, puis %, critiques compris", () => {
+    const target = {
+      pct: { neutral: 0, earth: 25, fire: -20, water: 0, air: 100 },
+      flat: { neutral: 0, earth: 10, fire: 0, water: 0, air: 0 },
+      critical: 8,
+    };
+    expect(applyTarget(110, "earth", false, target)).toBe(75); // (110 − 10) × 0,75
+    expect(applyTarget(110, "earth", true, target)).toBe(69); // (110 − 18) × 0,75
+    expect(applyTarget(100, "fire", false, target)).toBe(120); // faiblesse
+    expect(applyTarget(100, "air", false, target)).toBe(0); // immunité
+    expect(applyTarget(5, "earth", false, target)).toBe(0); // coup absorbé
+    expect(applyTarget(100, "earth", false, null)).toBe(100); // Poutch
+  });
 
   it("choisit le grade selon le niveau", () => {
     expect(spellGradeAt(glacee, 100)?.grade).toBe(1);

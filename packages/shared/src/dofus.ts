@@ -890,6 +890,41 @@ export interface SpellGrade {
   weapon?: boolean;
   lines: SpellDamageLine[];
   criticalLines: SpellDamageLine[];
+  /** Le sort se renforce lui-même (charges, attente). L'optimiseur reste à 0 charge. */
+  charges?: SpellCharges;
+  /** Bonus de caractéristiques donnés au lanceur ou aux alliés (sorts de boost). */
+  buffs?: SpellBuffLine[];
+}
+
+export interface SpellCharges {
+  /** Paliers : bonus cumulé aux jets de base après `at` charges (ou tours d'attente). */
+  steps: { at: number; bonus: number }[];
+  /** « charge » : à chaque lancer ; « turn » : après des tours d'attente. */
+  unit: "charge" | "turn";
+  /** Pas de limite de cumul en jeu (seules les premières charges sont listées). */
+  unlimited?: boolean;
+}
+
+/** Ligne de boost d'un sort : caractéristique, jet et durée. */
+export interface SpellBuffLine {
+  stat: StatKey;
+  min: number;
+  max: number;
+  /** Tours (−1 : jusqu'à la fin du combat). */
+  duration: number;
+  /** Ne s'applique pas toujours (état requis, déclenché, différé, cible précise). */
+  condition?: Exclude<LineCondition, "zone">;
+}
+
+/** Valeur retenue pour un boost : la moyenne du jet, arrondie vers le bas. */
+export const buffValue = (line: Pick<SpellBuffLine, "min" | "max">) =>
+  Math.floor((line.min + line.max) / 2);
+
+/** Le grade avec `bonus` ajouté aux jets de base de toutes ses lignes (charges). */
+export function withChargeBonus(grade: SpellGrade, bonus: number): SpellGrade {
+  if (bonus === 0) return grade;
+  const add = (l: SpellDamageLine) => ({ ...l, min: l.min + bonus, max: l.max + bonus });
+  return { ...grade, lines: grade.lines.map(add), criticalLines: grade.criticalLines.map(add) };
 }
 
 export interface DofusSpell {
@@ -930,6 +965,61 @@ export function spellGradeAt(spell: DofusSpell, level: number): SpellGrade | nul
   return usable.sort((a, b) => b.grade - a.grade)[0] ?? null;
 }
 
+/**
+ * Cible des sorts : résistances d'un monstre (le Poutch n'en a aucune).
+ * Dégâts subis = (dégâts − résistance fixe) × (100 − % résistance) / 100.
+ */
+export interface DamageTarget {
+  /** % de résistance par élément (négatif : faiblesse). */
+  pct: Record<DofusElement, number>;
+  /** Résistance fixe par élément. */
+  flat: Record<DofusElement, number>;
+  /** Résistance aux dommages critiques (fixe, retirée des coups critiques). */
+  critical: number;
+}
+
+/** Grade d'un monstre : niveau, PV et résistances. */
+export interface MonsterGrade {
+  grade: number;
+  level: number;
+  hp: number;
+  resistances: DamageTarget;
+  /** Résistance aux dommages de poussée (fixe). */
+  pushback: number;
+}
+
+/** Monstre du jeu (DofusDB), avec ses grades. */
+export interface DofusMonster {
+  id: number;
+  name: string;
+  icon: string | null;
+  boss: boolean;
+  grades: MonsterGrade[];
+}
+
+/** Dégâts subis par la cible pour un coup ; sans cible, inchangés. */
+export function applyTarget(
+  dealt: number,
+  element: DofusElement,
+  critical: boolean,
+  target?: DamageTarget | null,
+): number {
+  if (!target) return dealt;
+  const flat = (target.flat[element] ?? 0) + (critical ? target.critical : 0);
+  const pct = Math.min(100, target.pct[element] ?? 0);
+  return Math.max(0, Math.floor(((dealt - flat) * (100 - pct)) / 100));
+}
+
+/** Une cible a-t-elle une résistance ? (Poutch : non.) */
+export function hasResistances(target?: DamageTarget | null): target is DamageTarget {
+  if (!target) return false;
+  return (
+    target.critical !== 0 ||
+    Object.values(target.pct).some((v) => v !== 0) ||
+    Object.values(target.flat).some((v) => v !== 0)
+  );
+}
+
 export interface LineDamage {
   /** Élément retenu (pour une ligne « meilleur / pire élément » : celui choisi). */
   element: DofusElement;
@@ -958,7 +1048,11 @@ export interface SpellDamage {
  * × (100 + % dommages aux sorts + % dommages mêlée ou distance) / 100.
  * En coup critique, le jet critique est utilisé et les dommages critiques s'ajoutent.
  */
-export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): SpellDamage {
+export function computeSpellDamage(
+  totals: StatTotals,
+  grade: SpellGrade,
+  target?: DamageTarget | null,
+): SpellDamage {
   const melee = grade.range <= 1;
   const finalPct =
     100 +
@@ -970,7 +1064,9 @@ export function computeSpellDamage(totals: StatTotals, grade: SpellGrade): Spell
     const stat = Math.max(0, totals[element.stat]) + totals.power;
     const fixed = totals.damage + totals[element.damage] + (critical ? totals.criticalDamage : 0);
     const base = Math.floor((roll * (100 + stat)) / 100) + fixed;
-    const dealt = Math.max(0, Math.floor((base * finalPct) / 100));
+    const raw = Math.max(0, Math.floor((base * finalPct) / 100));
+    // Résistances de la cible (fixes, puis %), avant les dommages finaux.
+    const dealt = applyTarget(raw, line.element, critical, target);
     // Dommages finaux : appliqués en dernier, sur le résultat.
     return totals.finalDamagePct
       ? Math.max(0, Math.floor((dealt * (100 + totals.finalDamagePct)) / 100))

@@ -1,11 +1,16 @@
 import type {
+  DofusMonster,
+  MonsterGrade,
   DofusBreed,
   DofusElement,
   DofusSpell,
   ElementPick,
   LineCondition,
+  SpellBuffLine,
+  SpellCharges,
   SpellDamageLine,
   SpellGrade,
+  StatKey,
 } from "@kenpai/shared";
 import { HttpError } from "../../lib/errors";
 
@@ -39,6 +44,10 @@ interface RawEffect {
   effectId: number;
   diceNum: number;
   diceSide: number;
+  /** Valeur fixe de certains effets (bonus de dégâts de base d'un sort…). */
+  value?: number;
+  /** Tours (−1 : jusqu'à la fin du combat). */
+  duration?: number;
   /** Cibles et conditions, ex. « A » (ennemis), « A,E573 » (ennemi dans l'état 573). */
   targetMask?: string;
   /** Tours avant que l'effet ne se déclenche (0 : immédiat). */
@@ -92,6 +101,8 @@ interface RawLevel {
   maxCastPerTurn?: number;
   maxCastPerTarget?: number;
   minCastInterval?: number;
+  /** Cumuls possibles des effets du sort (−1 ou 0 : sans limite). */
+  maxStack?: number;
   effects: RawEffect[];
   criticalEffect?: RawEffect[];
 }
@@ -110,6 +121,64 @@ interface RawBreed {
   shortName: { fr?: string };
   img?: string;
 }
+interface RawMonsterGrade {
+  grade: number;
+  level: number;
+  lifePoints: number;
+  reductionNeutral?: number;
+  reductionEarth?: number;
+  reductionFire?: number;
+  reductionWater?: number;
+  reductionAir?: number;
+  reductionNeutralFlat?: number;
+  reductionEarthFlat?: number;
+  reductionFireFlat?: number;
+  reductionWaterFlat?: number;
+  reductionAirFlat?: number;
+  criticalDamageReduction?: number;
+  pushDamageReduction?: number;
+}
+interface RawMonster {
+  id: number;
+  name: { fr?: string };
+  /** Image du monstre (calculée par DofusDB, absente si on choisit les champs). */
+  img?: string;
+  gfxId?: number;
+  isBoss?: boolean;
+  hideInBestiary?: boolean;
+  grades?: RawMonsterGrade[];
+}
+
+/** Grade DofusDB → niveau, PV et résistances (en % et fixes) par élément. */
+export function normalizeMonsterGrade(g: RawMonsterGrade): MonsterGrade {
+  return {
+    grade: g.grade,
+    level: g.level,
+    hp: g.lifePoints,
+    resistances: {
+      pct: {
+        neutral: g.reductionNeutral ?? 0,
+        earth: g.reductionEarth ?? 0,
+        fire: g.reductionFire ?? 0,
+        water: g.reductionWater ?? 0,
+        air: g.reductionAir ?? 0,
+      },
+      flat: {
+        neutral: g.reductionNeutralFlat ?? 0,
+        earth: g.reductionEarthFlat ?? 0,
+        fire: g.reductionFireFlat ?? 0,
+        water: g.reductionWaterFlat ?? 0,
+        air: g.reductionAirFlat ?? 0,
+      },
+      critical: g.criticalDamageReduction ?? 0,
+    },
+    pushback: g.pushDamageReduction ?? 0,
+  };
+}
+
+/** Résultats d'une recherche de monstres au plus. */
+const MONSTERS_MAX = 20;
+
 interface Page<T> {
   total: number;
   data: T[];
@@ -148,10 +217,114 @@ function castsPerTurn(raw: RawLevel): number | null {
   return limits.length > 0 ? Math.min(...limits) : null;
 }
 
+/** Effet « +X dégâts de base au sort #diceNum ». */
+const BASE_DAMAGE_BOOST = 293;
+/** Charges listées quand le jeu ne fixe pas de limite de cumul. */
+const UNLIMITED_CHARGES_SHOWN = 5;
+
+const maskTokens = (e: RawEffect) =>
+  (e.targetMask ?? "A").split(",").map((t) => t.trim().replace(/^\*/, ""));
+/** Un jeton de cible qui exige un état, une classe, une invocation… (« E573 », « b14 »). */
+const isFilterToken = (t: string) => /^[A-Za-z]+\d+/.test(t);
+
+/**
+ * Le sort se renforce-t-il lui-même ? Lignes « +X dégâts de base » qui visent
+ * ce sort, sans état requis : à chaque lancer (charges, dans la limite de
+ * cumul) ou après des tours d'attente (effets différés, cumulés).
+ */
+export function spellCharges(raw: RawLevel): SpellCharges | null {
+  const own = raw.effects.filter(
+    (e) =>
+      e.effectId === BASE_DAMAGE_BOOST &&
+      e.diceNum === raw.spellId &&
+      (e.value ?? 0) > 0 &&
+      (!e.triggers || e.triggers === "I") &&
+      !maskTokens(e).some(isFilterToken),
+  );
+  if (own.length === 0) return null;
+  const delayed = own.filter((e) => (e.delay ?? 0) > 0);
+  if (delayed.length > 0) {
+    // Un palier par délai : somme des effets déjà déclenchés après autant de tours.
+    const delays = [...new Set(delayed.map((e) => e.delay!))].sort((a, b) => a - b);
+    const steps = delays.map((at) => ({
+      at,
+      bonus: delayed.filter((e) => e.delay! <= at).reduce((sum, e) => sum + e.value!, 0),
+    }));
+    return { steps, unit: "turn" };
+  }
+  const perCharge = own.reduce((sum, e) => sum + e.value!, 0);
+  const max = raw.maxStack ?? -1;
+  const count = max > 0 ? max : UNLIMITED_CHARGES_SHOWN;
+  return {
+    steps: Array.from({ length: count }, (_, i) => ({ at: i + 1, bonus: perCharge * (i + 1) })),
+    unit: "charge",
+    ...(max > 0 ? {} : { unlimited: true }),
+  };
+}
+
+/** Effets de boost DofusDB (gain de caractéristique) → caractéristique. */
+const BUFF_EFFECTS: Record<number, StatKey> = {
+  111: "ap",
+  112: "damage",
+  115: "critical",
+  117: "range",
+  118: "strength",
+  119: "agility",
+  123: "chance",
+  126: "intelligence",
+  128: "mp",
+  138: "power",
+  178: "heals",
+  182: "summons",
+  414: "pushbackDamage",
+  418: "criticalDamage",
+  1171: "finalDamagePct",
+  2800: "meleeDamagePct",
+  2804: "rangedDamagePct",
+};
+/** Cibles d'un boost : alliés (a, g) ou lanceur (c, C). */
+const BUFF_TARGETS = new Set(["a", "c", "C", "g"]);
+
+/**
+ * Boosts d'un sort : gains de caractéristiques qui peuvent viser le lanceur ou
+ * un allié. Ceux qui demandent un état, une cible précise, un déclenchement ou
+ * un délai sont repérés : le joueur décide s'il les compte.
+ */
+export function buffLines(effects: RawEffect[] | undefined): SpellBuffLine[] {
+  return (effects ?? []).flatMap((e) => {
+    const stat = BUFF_EFFECTS[e.effectId];
+    if (!stat) return [];
+    const tokens = maskTokens(e);
+    if (!tokens.some((t) => BUFF_TARGETS.has(t))) return [];
+    const min = e.diceNum;
+    const max = e.diceSide > 0 ? e.diceSide : e.diceNum;
+    if (Math.max(min, max) <= 0) return [];
+    const condition: SpellBuffLine["condition"] =
+      (e.delay ?? 0) > 0
+        ? "delayed"
+        : e.triggers && e.triggers !== "I"
+          ? "triggered"
+          : tokens.some((t) => !BUFF_TARGETS.has(t) && t !== "A")
+            ? "conditional"
+            : undefined;
+    return [
+      {
+        stat,
+        min: Math.min(min, max),
+        max: Math.max(min, max),
+        duration: e.duration ?? 0,
+        ...(condition ? { condition } : {}),
+      },
+    ];
+  });
+}
+
 export function normalizeGrade(raw: RawLevel): SpellGrade {
   // Aucun dégât direct : on garde les dégâts sous condition, repérés, pour que le
   // sort apparaisse (Anneau Destructeur, poisons, sorts à état…).
   const fallback = damageLines(raw.effects).length === 0;
+  const charges = spellCharges(raw);
+  const buffs = buffLines(raw.effects);
   return {
     grade: raw.grade,
     minLevel: raw.minPlayerLevel,
@@ -162,6 +335,8 @@ export function normalizeGrade(raw: RawLevel): SpellGrade {
     maxCastsPerTurn: castsPerTurn(raw),
     lines: damageLines(raw.effects, fallback),
     criticalLines: damageLines(raw.criticalEffect, fallback),
+    ...(charges ? { charges } : {}),
+    ...(buffs.length > 0 ? { buffs } : {}),
   };
 }
 
@@ -241,6 +416,33 @@ export class DofusDbClient {
         }
       }
       return result;
+    });
+  }
+
+  /**
+   * Monstres dont le nom contient le texte (sans tenir compte des majuscules),
+   * hors monstres cachés du bestiaire, avec leurs grades.
+   */
+  monsters(query: string): Promise<DofusMonster[]> {
+    const text = query.trim().slice(0, 40);
+    return this.cached(`monsters:${text.toLowerCase()}`, async () => {
+      const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const page = await this.get<RawMonster>("/monsters", [
+        ["$limit", String(MONSTERS_MAX)],
+        ["name.fr[$regex]", `(?i)${escaped}`],
+        ...["id", "name", "gfxId", "isBoss", "hideInBestiary", "grades"].map(
+          (f): [string, string] => ["$select[]", f],
+        ),
+      ]);
+      return page.data
+        .filter((m) => !m.hideInBestiary && (m.grades?.length ?? 0) > 0)
+        .map((m) => ({
+          id: m.id,
+          name: m.name.fr ?? `Monstre ${m.id}`,
+          icon: m.img ?? (m.gfxId ? `${this.baseUrl}/img/monsters/${m.gfxId}.png` : null),
+          boss: !!m.isBoss,
+          grades: (m.grades ?? []).map(normalizeMonsterGrade).sort((a, b) => a.grade - b.grade),
+        }));
     });
   }
 

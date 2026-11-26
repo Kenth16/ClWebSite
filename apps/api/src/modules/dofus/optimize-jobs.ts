@@ -20,6 +20,7 @@ import {
   specialEffectOf,
   SLOTS,
   optimizerGrade,
+  itemCategory,
   type Characteristic,
   type DofusBreed,
   type DofusItem,
@@ -37,6 +38,8 @@ import type { DofusDbClient } from "./spells";
 
 /** Temps maximal d'une preuve ; au-delà, le meilleur stuff trouvé est rendu. */
 const PROOF_TIME_LIMIT_MS = 5 * 60_000;
+/** Stuffs différents rendus au joueur : le meilleur, puis les meilleurs autres rencontrés. */
+const STUFFS_KEPT = 5;
 /** Calculs en attente au plus (les calculs passent un par un). */
 const QUEUE_MAX = 5;
 /** Durée de conservation d'un résultat. */
@@ -177,9 +180,13 @@ export class OptimizeJobs {
 
   private async optimize(request: OptimizeRequest, job: Job) {
     const { progress, trace } = job;
-    const { breedId, level, ap, exos, critical, attack, scrolls, minimums } = request;
+    const { breedId, level, ap, exos, critical: critMode, attack, scrolls, minimums } = request;
+    const critical = critMode !== "never";
     const { forcedItems: forced, bannedItems, prysmaradites, legendaryItems } = request;
+    const excluded = new Set(request.excludedCategories);
     const { situation, ownedDofus } = request;
+    // Cible des sorts : résistances du monstre choisi (null : Poutch, aucune).
+    const target = request.target;
     const [breeds, classSpells, equipment, sets] = await Promise.all([
       this.spells.breeds(),
       this.spells.spells(breedId),
@@ -190,10 +197,15 @@ export class OptimizeJobs {
     const criteria = await this.spells.itemCriteria(equipment.map((i) => i.id));
     // Objets écartés par le joueur : interdits, Prysmaradites, équipements légendaires.
     const banned = new Set(bannedItems);
+    const excludedCategory = (item: (typeof equipment)[number]) => {
+      const category = itemCategory(item);
+      return category !== null && excluded.has(category);
+    };
     const allowed = (item: (typeof equipment)[number]) =>
       forced.includes(item.id) ||
       (!banned.has(item.id) &&
         (prysmaradites || !/prysmaradite/i.test(item.type)) &&
+        !excludedCategory(item) &&
         (legendaryItems || !LEGENDARY_ITEM_IDS.has(item.id)) &&
         (ownedDofus === null || item.type !== "Dofus" || ownedDofus.includes(item.id)));
     const items = equipment.filter(allowed).map((item) => {
@@ -204,7 +216,7 @@ export class OptimizeJobs {
     // Bonus de combat (Ocre, Vulbis, légendaires…) dans la situation simulée.
     // PA, PM et PO gagnés en combat (Ocre…) ne comptent pas : le stuff doit atteindre
     // seul les PA visés, et ils n'augmentent pas les dégâts de la rotation choisie.
-    const buffs = scenarioBuffs(items, situation);
+    const buffs = scenarioBuffs(items, situation, critMode);
     for (const [id, b] of buffs) {
       const rest = { ...b };
       delete rest.ap;
@@ -257,6 +269,11 @@ export class OptimizeJobs {
       const value = minimums.resistances[element as keyof typeof RESISTANCE_STATS];
       if (value !== undefined) mins[stat] = value;
     }
+    // 100 % de critique : chaque sort doit être critique à coup sûr (bonus de combat
+    // compris, ex. Audace de Dodge), le critique n'est alors plus une inconnue.
+    if (critMode === "always") {
+      mins.critical = 100 - Math.min(...spells.map((s) => s.grade.criticalChance));
+    }
 
     // 1. Recherche locale rapide : un premier stuff, avec une répartition simple des
     //    points (éléments des sorts, et Vitalité si des PV sont exigés).
@@ -276,6 +293,7 @@ export class OptimizeJobs {
       minimums: mins,
       forced,
       buffs,
+      target,
     });
     trace.funnel = model.funnel;
     if (model.missingForced.length > 0) {
@@ -318,7 +336,7 @@ export class OptimizeJobs {
             shortfall += Math.max(0, min - total(stat));
           }
           shortfall += Math.max(0, ap - total("ap")) * 100;
-          return rotationDamage(total, spells, { attack, critical }) - shortfall * 10_000;
+          return rotationDamage(total, spells, { attack, critical, target }) - shortfall * 10_000;
         },
       });
       if (!model.feasible(local.slots, points)) continue;
@@ -351,8 +369,10 @@ export class OptimizeJobs {
       minimums: mins,
       forced,
       buffs,
+      target,
       initial: start?.slots,
       initialPoints: start?.points,
+      keep: STUFFS_KEPT,
       workers: defaultWorkers(),
       timeLimitMs: PROOF_TIME_LIMIT_MS,
       onProgress: (p) => {
@@ -388,69 +408,84 @@ export class OptimizeJobs {
       );
     }
 
-    // Fiches complètes des objets retenus, caractéristiques et dégâts par sort.
-    const slots: Partial<Record<SlotId, number>> = proof.slots;
-    const ids = Object.values(slots).filter((id): id is number => id !== undefined);
-    const chosen = await Promise.all(ids.map((id) => this.client.item(id)));
-    const setIds = new Set(chosen.map((i) => i.set?.id).filter((id): id is number => !!id));
-    const usedSets = sets.filter((s) => setIds.has(s.id));
-    const points = Object.fromEntries(
-      CHARACTERISTICS.map((c) => [c, proof.points[c] ?? 0]),
-    ) as Record<Characteristic, number>;
-    const character = computeCharacter({
-      level,
-      base: points,
-      scrolls: scrollsBy,
-      items: chosen,
-      sets: usedSets,
-      exos,
-      // Mêmes bonus que le solveur (moyenne des tours comprise, sans PA/PM/PO de combat).
-      buffs: chosen.reduce<Partial<Record<StatKey, number>>>((sum, i) => {
-        for (const [k, v] of Object.entries(buffs.get(i.id) ?? {}) as [StatKey, number][]) {
-          sum[k] = (sum[k] ?? 0) + v;
-        }
-        return sum;
-      }, {}),
-    });
-    const totals = { ...character.totals };
-    if (!critical) totals.critical = -1000;
-    const perSpell = spells.map((s) => {
-      const grade = { ...s.grade, range: attack === "melee" ? 1 : Math.max(2, s.grade.range) };
-      const damage = computeSpellDamage(totals, grade);
+    // Fiches complètes de chaque stuff gardé : objets, caractéristiques, dégâts par sort.
+    const describe = async (
+      slots: Partial<Record<SlotId, number>>,
+      found: Partial<Record<StatKey, number>>,
+    ) => {
+      const ids = Object.values(slots).filter((id): id is number => id !== undefined);
+      const chosen = await Promise.all(ids.map((id) => this.client.item(id)));
+      const setIds = new Set(chosen.map((i) => i.set?.id).filter((id): id is number => !!id));
+      const usedSets = sets.filter((s) => setIds.has(s.id));
+      const points = Object.fromEntries(CHARACTERISTICS.map((c) => [c, found[c] ?? 0])) as Record<
+        Characteristic,
+        number
+      >;
+      const character = computeCharacter({
+        level,
+        base: points,
+        scrolls: scrollsBy,
+        items: chosen,
+        sets: usedSets,
+        exos,
+        // Mêmes bonus que le solveur (moyenne des tours comprise, sans PA/PM/PO de combat).
+        buffs: chosen.reduce<Partial<Record<StatKey, number>>>((sum, i) => {
+          for (const [k, v] of Object.entries(buffs.get(i.id) ?? {}) as [StatKey, number][]) {
+            sum[k] = (sum[k] ?? 0) + v;
+          }
+          return sum;
+        }, {}),
+      });
+      const totals = { ...character.totals };
+      if (!critical) totals.critical = -1000;
+      const perSpell = spells.map((s) => {
+        const grade = { ...s.grade, range: attack === "melee" ? 1 : Math.max(2, s.grade.range) };
+        const damage = computeSpellDamage(totals, grade, target);
+        return {
+          spellId: s.spell.id,
+          name: s.spell.name,
+          icon: s.spell.icon,
+          apCost: s.grade.apCost,
+          average: damage.exactAverage,
+          lines: damage.lines,
+          criticalChance: critical ? damage.criticalChance : 0,
+        };
+      });
       return {
-        spellId: s.spell.id,
-        name: s.spell.name,
-        icon: s.spell.icon,
-        apCost: s.grade.apCost,
-        average: damage.exactAverage,
-        lines: damage.lines,
-        criticalChance: critical ? damage.criticalChance : 0,
+        points,
+        slots,
+        /** Choix des effets spéciaux du stuff (situation simulée), pour le simulateur. */
+        specials: Object.fromEntries(
+          Object.entries(optimizerChoices(situation, undefined, critMode)).filter(([key]) =>
+            chosen.some((i) => specialEffectOf(i)?.key === key),
+          ),
+        ),
+        damage: perSpell.reduce((sum, s) => sum + s.average, 0),
+        spells: perSpell,
+        hp: character.hp,
+        totals: character.totals,
+        items: chosen,
+        sets: usedSets,
       };
-    });
+    };
+    const kept = proof.found.length > 0 ? proof.found : [proof];
+    const stuffs = [];
+    for (const f of kept) stuffs.push(await describe(f.slots, f.points));
+    const best = stuffs[0]!;
     return {
       breed,
       level,
       ap,
       exos,
       critical,
+      critMode,
       attack,
       scrolls,
       minimums,
       situation,
-      points,
-      slots,
-      /** Choix des effets spéciaux du stuff (situation simulée), pour le simulateur. */
-      specials: Object.fromEntries(
-        Object.entries(optimizerChoices(situation)).filter(([key]) =>
-          chosen.some((i) => specialEffectOf(i)?.key === key),
-        ),
-      ),
-      damage: perSpell.reduce((sum, s) => sum + s.average, 0),
-      spells: perSpell,
-      hp: character.hp,
-      totals: character.totals,
-      items: chosen,
-      sets: usedSets,
+      // Meilleur stuff (champs à plat), puis tous les stuffs gardés (le premier est le même).
+      ...best,
+      stuffs,
       proof: {
         proven: proof.proven,
         damage: proof.damage,

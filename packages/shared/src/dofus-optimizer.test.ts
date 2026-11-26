@@ -16,6 +16,8 @@ import {
   optimizeTurnDamage,
   topCombos,
   turnSpells,
+  itemCategory,
+  optimizeRequestSchema,
 } from "./dofus-optimizer";
 
 const item = (
@@ -305,5 +307,54 @@ describe("meilleurs tours", () => {
     combos.sort((x, y) => y - x);
     expect(top.map((t) => t.damage)).toEqual(combos.slice(0, 4));
     expect(top[0]!.apUsed).toBeLessThanOrEqual(11);
+  });
+});
+
+describe("demande d'optimisation", () => {
+  const request = { breedId: 1, level: 200, spellIds: [1], ap: 11 };
+  it("accepte les trois modes de critique, et l'ancien format vrai / faux", () => {
+    expect(optimizeRequestSchema.parse(request).critical).toBe("weighted");
+    expect(optimizeRequestSchema.parse({ ...request, critical: "always" }).critical).toBe("always");
+    expect(optimizeRequestSchema.parse({ ...request, critical: true }).critical).toBe("weighted");
+    expect(optimizeRequestSchema.parse({ ...request, critical: false }).critical).toBe("never");
+    expect(optimizeRequestSchema.safeParse({ ...request, critical: "souvent" }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe("catégories d'objets", () => {
+  const weapon = (range: number) => ({
+    family: "weapon" as const,
+    type: "Arc",
+    weapon: {
+      apCost: 4,
+      minRange: 1,
+      range,
+      criticalChance: 5,
+      criticalBonus: 0,
+      castsPerTurn: 1,
+      lines: [],
+    },
+  });
+  it("classe familiers, montures, Dofus, trophées et armes selon la portée", () => {
+    expect(itemCategory({ family: "pet", type: "Muldo" })).toBe("seemyool");
+    expect(itemCategory({ family: "pet", type: "Montilier" })).toBe("petsmount");
+    expect(itemCategory({ family: "dofus", type: "Trophée" })).toBe("trophy");
+    expect(itemCategory({ family: "dofus", type: "Prysmaradite" })).toBe("prysmaradite");
+    expect(itemCategory(weapon(5))).toBe("rangedWeapon");
+    expect(itemCategory(weapon(1))).toBe("meleeWeapon");
+    expect(itemCategory({ family: "hat", type: "Chapeau" })).toBeNull();
+  });
+  it("accepte une liste de catégories écartées", () => {
+    const request = { breedId: 1, level: 200, spellIds: [1], ap: 11 };
+    expect(optimizeRequestSchema.parse(request).excludedCategories).toEqual([]);
+    expect(
+      optimizeRequestSchema.parse({ ...request, excludedCategories: ["trophy", "rangedWeapon"] })
+        .excludedCategories,
+    ).toEqual(["trophy", "rangedWeapon"]);
+    expect(
+      optimizeRequestSchema.safeParse({ ...request, excludedCategories: ["chapeau"] }).success,
+    ).toBe(false);
   });
 });

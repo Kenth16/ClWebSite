@@ -12,6 +12,7 @@ import {
   computeSpellDamage,
   spellGradeAt,
   type Characteristic,
+  type DamageTarget,
   type DofusElement,
   type DofusItem,
   type DofusSet,
@@ -25,7 +26,12 @@ import {
 } from "./dofus";
 import { z } from "zod";
 import { criteriaMet, type CriteriaTree } from "./dofus-criteria";
-import { DEFAULT_SITUATION, OPTIMIZER_FIGHTS, OPTIMIZER_TURNS } from "./dofus-special";
+import {
+  DEFAULT_SITUATION,
+  OPTIMIZER_CRIT_MODES,
+  OPTIMIZER_FIGHTS,
+  OPTIMIZER_TURNS,
+} from "./dofus-special";
 
 // ─── Demande ───────────────────────────────────────────────────────────────
 
@@ -37,6 +43,56 @@ export const OPTIMIZER_SPELLS_MAX = 20;
 /** Objets que le joueur peut imposer (un par emplacement) ou interdire. */
 export const OPTIMIZER_FORCED_MAX = 16;
 export const OPTIMIZER_BANNED_MAX = 200;
+
+/** Une valeur par élément (résistances de la cible), entière et raisonnable. */
+const elementValue = z.number().int().min(-10_000).max(10_000).default(0);
+const elementValues = z
+  .object({
+    neutral: elementValue,
+    earth: elementValue,
+    fire: elementValue,
+    water: elementValue,
+    air: elementValue,
+  })
+  .default({ neutral: 0, earth: 0, fire: 0, water: 0, air: 0 });
+
+/** Catégories d'objets que le joueur peut écarter du solveur. */
+export const OPTIMIZER_ITEM_CATEGORIES = [
+  { id: "pet", label: "Familier" },
+  { id: "petsmount", label: "Montilier" },
+  { id: "dragoturkey", label: "Dragodinde" },
+  { id: "seemyool", label: "Muldo" },
+  { id: "rhineetle", label: "Volkorne" },
+  { id: "rangedWeapon", label: "Armes à distance" },
+  { id: "meleeWeapon", label: "Armes de mêlée" },
+  { id: "dofus", label: "Dofus" },
+  { id: "trophy", label: "Trophée" },
+  { id: "prysmaradite", label: "Prysmaradite" },
+] as const;
+export type OptimizerItemCategory = (typeof OPTIMIZER_ITEM_CATEGORIES)[number]["id"];
+const CATEGORY_IDS = OPTIMIZER_ITEM_CATEGORIES.map((c) => c.id) as [
+  OptimizerItemCategory,
+  ...OptimizerItemCategory[],
+];
+const CATEGORY_BY_TYPE: Record<string, OptimizerItemCategory> = {
+  familier: "pet",
+  montilier: "petsmount",
+  dragodinde: "dragoturkey",
+  muldo: "seemyool",
+  volkorne: "rhineetle",
+  dofus: "dofus",
+  trophée: "trophy",
+  prysmaradite: "prysmaradite",
+};
+
+/** Catégorie d'un objet (null : aucune, toujours permis). Arme : à distance si portée > 1. */
+export function itemCategory(
+  item: Pick<DofusItem, "family" | "type" | "weapon">,
+): OptimizerItemCategory | null {
+  if (item.family === "weapon")
+    return (item.weapon?.range ?? 1) > 1 ? "rangedWeapon" : "meleeWeapon";
+  return CATEGORY_BY_TYPE[item.type.toLowerCase()] ?? null;
+}
 /** Éléments dont on peut exiger un % de résistance minimal. */
 export const RESISTANCE_STATS = {
   neutral: "neutralResPct",
@@ -64,8 +120,16 @@ export const optimizeRequestSchema = z
     exos: z
       .object({ ap: z.boolean(), mp: z.boolean(), range: z.boolean() })
       .default({ ap: false, mp: false, range: false }),
-    /** Coups critiques pondérés par la chance de critique, ou aucun critique. */
-    critical: z.boolean().default(true),
+    /**
+     * Coups critiques : pondérés par la chance de critique, toujours (100 % de
+     * critique exigé) ou jamais. Ancien format : true (pondérés), false (jamais).
+     */
+    critical: z
+      .preprocess(
+        (v) => (typeof v === "boolean" ? (v ? "weighted" : "never") : v),
+        z.enum(OPTIMIZER_CRIT_MODES),
+      )
+      .default("weighted"),
     /** Distance ou mêlée : quel % de dommages s'applique à tous les sorts. */
     attack: z.enum(["ranged", "melee"]).default("ranged"),
     /** Parchemins dans chaque caractéristique (0 à 100). */
@@ -91,6 +155,20 @@ export const optimizeRequestSchema = z
     pickElements: z.record(z.string().regex(/^\d+$/), z.enum(PICKABLE_ELEMENTS)).default({}),
     /** Prysmaradites autorisées (une seule au plus dans le stuff). */
     prysmaradites: z.boolean().default(true),
+    /**
+     * Cible des sorts (monstre) : résistances par élément et aux critiques. Absente :
+     * un Poutch, sans résistance.
+     */
+    target: z
+      .object({
+        pct: elementValues,
+        flat: elementValues,
+        critical: z.number().int().min(-10_000).max(10_000).default(0),
+      })
+      .nullable()
+      .default(null),
+    /** Catégories d'objets écartées (familiers, armes à distance, trophées…). */
+    excludedCategories: z.array(z.enum(CATEGORY_IDS)).max(CATEGORY_IDS.length).default([]),
     /** Équipements légendaires autorisés (Jahash, Crocobur, Mériana…). */
     legendaryItems: z.boolean().default(true),
     /** Situation de combat simulée : tour et durée du combat. */
@@ -828,7 +906,7 @@ export function optimizeTurnDamage(input: DamageOptimizeInput) {
 export function rotationDamage(
   total: (k: StatKey) => number,
   spells: readonly TurnSpell[],
-  options: { attack: "ranged" | "melee"; critical: boolean },
+  options: { attack: "ranged" | "melee"; critical: boolean; target?: DamageTarget | null },
 ): number {
   const totals = Object.fromEntries(
     (Object.keys(STATS) as StatKey[]).map((k) => [k, total(k)]),
@@ -840,7 +918,7 @@ export function rotationDamage(
       ...s.grade,
       range: options.attack === "melee" ? 1 : Math.max(2, s.grade.range),
     };
-    sum += computeSpellDamage(totals, grade).exactAverage;
+    sum += computeSpellDamage(totals, grade, options.target).exactAverage;
   }
   return sum;
 }

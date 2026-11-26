@@ -65,6 +65,15 @@ export const dofusRoutes: FastifyPluginAsync<{
     return { item: await client.item(id) };
   });
 
+  /** Monstres du jeu (DofusDB) : cible des sorts dans l'optimiseur. */
+  const monsterQuery = z.object({
+    q: z.string().trim().min(2, "Tapez au moins 2 lettres.").max(40),
+  });
+  app.get("/monsters", limited, async (request) => {
+    const { q } = parseInput(monsterQuery, request.query);
+    return { monsters: await spells.monsters(q) };
+  });
+
   /** Classes jouables (DofusDB). */
   app.get("/classes", limited, async () => ({ classes: await spells.breeds() }));
 

@@ -130,20 +130,19 @@ describe("équipements légendaires", () => {
 });
 
 describe("situation de l'optimiseur", () => {
-  const ids = [7754, 6980, 20358, 32114, 32163, 20359, 8698, 739, 694, 29136, 22001, 22004].map(
-    (id) => ({ id }),
-  );
+  const ids = [
+    7754, 6980, 20358, 32114, 32163, 20359, 8698, 739, 694, 29136, 22001, 22004, 20365, 23237,
+  ].map((id) => ({ id }));
   const short = (turn: "odd" | "even" | "average") => scenarioBuffs(ids, { turn, fight: "short" });
   const long = scenarioBuffs(ids, { turn: "odd", fight: "long" });
 
-  it("combat court : pas touché, tous les ennemis en vie, PV hauts, Turquoise 4", () => {
+  it("combat court : pas touché, tous les ennemis en vie, PV hauts, Dodge déplacé", () => {
     const b = short("odd");
     expect(b.get(6980)).toEqual({ finalDamagePct: 10 });
     expect(b.get(20358)).toEqual({ finalDamagePct: 7 });
     expect(b.get(32114)).toEqual({ finalDamagePct: 4 });
     expect(b.get(32163)?.fireResPct).toBe(4);
-    expect(b.get(739)).toEqual({ finalDamagePct: 4 });
-    expect(b.has(694)).toBe(false); // Pourpre : pas le temps de cumuler
+    expect(b.get(20365)).toEqual({ mp: 1, critical: 10 });
     expect(b.has(29136)).toBe(false); // Sylvestre : long terme
     expect(b.has(20359)).toBe(false); // Brâm : cumuls
   });
@@ -157,14 +156,37 @@ describe("situation de l'optimiseur", () => {
     expect(short("odd").get(22004)?.finalDamagePct).toBe(10);
   });
 
+  it("combat court : Turquoise et Pourpre cumulent dès le tour 2", () => {
+    expect(short("odd").get(739)).toEqual({ finalDamagePct: 2 });
+    expect(short("odd").has(694)).toBe(false); // pas encore touché
+    expect(short("even").get(739)).toEqual({ finalDamagePct: 5 });
+    expect(short("even").get(694)).toEqual({ finalDamagePct: 1 });
+    expect(short("average").get(739)).toEqual({ finalDamagePct: 3 }); // (2 + 5) / 2, arrondi
+    expect(short("odd").has(23237)).toBe(false); // Domakuro : rien au tour 1
+    expect(short("even").get(23237)).toEqual({ damage: 16 });
+    expect(short("average").has(694)).toBe(false); // moitié de 1 : arrondi à 0
+  });
+
+  it("sans critique, le Turquoise ne cumule pas", () => {
+    const never = (fight: "short" | "long") => scenarioBuffs(ids, { turn: "even", fight }, "never");
+    expect(never("short").has(739)).toBe(false);
+    expect(never("long").has(739)).toBe(false);
+    expect(never("long").get(694)).toEqual({ finalDamagePct: 3 });
+    expect(scenarioBuffs(ids, { turn: "even", fight: "short" }, "always").get(739)).toEqual({
+      finalDamagePct: 5,
+    });
+  });
+
   it("combat long : cumuls au maximum, bonus de début de combat réduits ou retirés", () => {
     expect(long.get(6980)).toEqual({ finalDamagePct: 5 }); // Vulbis à moitié
     expect(long.get(32114)).toEqual({ finalDamagePct: 2 }); // 60 % de 4
     expect(long.has(20358)).toBe(false); // PV sous 50 %
-    expect(long.has(8698)).toBe(false); // Nébuleux
+    expect(long.get(8698)).toEqual({ finalDamagePct: 5 }); // Nébuleux : (+20 − 10) / 2
+    expect(long.get(23237)).toEqual({ damage: 32 }); // Domakuro
     expect(long.has(22001)).toBe(false); // Prysmaradite
-    expect(long.get(694)).toEqual({ finalDamagePct: 10 });
-    expect(long.get(739)).toEqual({ finalDamagePct: 10 });
+    expect(long.get(694)).toEqual({ finalDamagePct: 3 }); // Pourpre : 3 cumuls en moyenne
+    expect(long.get(739)).toEqual({ finalDamagePct: 7 }); // Turquoise : 7 cumuls
+    expect(long.get(20365)).toEqual({ mp: 1, critical: 10 });
     expect(long.get(29136)).toEqual({ power: 96 });
     expect(long.get(20359)).toEqual({ finalDamagePct: 10 });
   });

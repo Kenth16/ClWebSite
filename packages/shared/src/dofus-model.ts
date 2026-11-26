@@ -8,6 +8,9 @@ import {
   ELEMENTS,
   SLOTS,
   STAT_CAPS,
+  applyTarget,
+  hasResistances,
+  type DamageTarget,
   type DofusItem,
   type DofusSet,
   type SlotFamily,
@@ -52,6 +55,8 @@ export interface DamageModelInput {
    * dégâts, les PA et les exigences, mais pas dans les conditions des objets.
    */
   buffs?: ReadonlyMap<number, Partial<Record<StatKey, number>>>;
+  /** Cible des sorts (résistances d'un monstre) ; absente : aucune résistance. */
+  target?: DamageTarget | null;
 }
 
 /** Coût d'un point de caractéristique, par paliers : [jusqu'à, prix]. */
@@ -135,6 +140,11 @@ interface Directions {
 
 export function buildDamageModel(input: DamageModelInput) {
   const { ap: apTarget, spells } = input;
+  // Cible sans aucune résistance (Poutch) : comme sans cible.
+  const target = hasResistances(input.target) ? input.target : null;
+  /** Part des dégâts qui passe les % de résistance de la cible pour un élément. */
+  const resistMul = (element: keyof typeof ELEMENTS) =>
+    target ? Math.max(0, 100 - Math.min(100, target.pct[element] ?? 0)) / 100 : 1;
   // ── Caractéristiques regroupées comme dans la formule des dégâts ────────
   // AP ; (caractéristique + Puissance) par élément ; (Dommages + Do élément) ;
   // % critique ; dommages critiques ; (% sorts + % mêlée) et (% sorts + % distance).
@@ -200,6 +210,7 @@ export function buildDamageModel(input: DamageModelInput) {
           grade.criticalLines.find((c, j) => j === i && c.element === line.element) ??
           grade.criticalLines.find((c) => c.element === line.element && c.kind === line.kind);
         return {
+          element: line.element,
           stat: statFeature.get(ELEMENTS[line.element].stat)!,
           damage: damageFeature.get(line.element)!,
           normal: (line.min + line.max) / 2,
@@ -234,16 +245,23 @@ export function buildDamageModel(input: DamageModelInput) {
       for (const line of p.lines) {
         const scale = 100 + f(line.stat);
         const fixed = f(line.damage);
-        const hit = (roll: number, extra: number) =>
+        const hit = (roll: number, extra: number, isCrit: boolean) =>
           finish(
-            Math.max(
-              0,
-              Math.floor(((Math.floor((roll * scale) / 100) + fixed + extra) * pct) / 100),
+            applyTarget(
+              Math.max(
+                0,
+                Math.floor(((Math.floor((roll * scale) / 100) + fixed + extra) * pct) / 100),
+              ),
+              line.element,
+              isCrit,
+              target,
             ),
           );
-        const normal = (hit(line.rolls[0]!, 0) + hit(line.rolls[1]!, 0)) / 2;
+        const normal = (hit(line.rolls[0]!, 0, false) + hit(line.rolls[1]!, 0, false)) / 2;
         const crit = line.critRolls
-          ? (hit(line.critRolls[0]!, critDamage) + hit(line.critRolls[1]!, critDamage)) / 2
+          ? (hit(line.critRolls[0]!, critDamage, true) +
+              hit(line.critRolls[1]!, critDamage, true)) /
+            2
           : normal;
         sum += (1 - chance) * normal + chance * crit;
       }
@@ -574,6 +592,220 @@ export function buildDamageModel(input: DamageModelInput) {
   };
   const zero = new Float64Array(D);
 
+  // ── Dominance pondérée ─────────────────────────────────────────────────
+  // À % dommages, % critique et % finaux donnés, les dégâts sont une somme
+  // pondérée des autres caractéristiques regroupées (caractéristique +
+  // Puissance, Dommages, dommages critiques), avec des poids connus. b remplace
+  // donc a sans perte si : b fait au moins aussi bien sur ces multiplicateurs
+  // (et les PA), et la somme pondérée de b dépasse celle de a pour TOUT % critique
+  // possible, d'une marge qui couvre les arrondis du jeu (chaque étape arrondie
+  // à l'inférieur fait perdre moins d'un point). Les poids varient avec le %
+  // critique de façon affine par morceaux : il suffit de tester les cassures.
+  const multDims = [AP, CRIT, MELEE, RANGED, FINAL].filter((d) => d >= 0);
+  const blockDims = [
+    ...new Set([...statFeature.values(), ...damageFeature.values()]),
+    ...(CRIT_DMG >= 0 ? [CRIT_DMG] : []),
+  ];
+  /** Groupes de sorts qui partagent un % dommages (somme des sorts) ; un par sort en combo. */
+  const spellGroups: TurnSpell[][] =
+    input.mode === "rotation"
+      ? [MELEE, RANGED]
+          .filter((d) => d >= 0)
+          .map((d) => spells.filter((s) => prepared.get(s)!.pct === d))
+      : spells.map((s) => [s]);
+  /** Bornes d'un total regroupé sur les candidats actuels (panoplies comprises). */
+  const featureRange = (d: number): [number, number] => {
+    let lo = baseVec[d]!;
+    let hi = baseVec[d]!;
+    for (const [family, list] of byFamily) {
+      const k = slotsOf(family);
+      lo += list
+        .map((c) => c.lo[d]!)
+        .filter((x) => x < 0)
+        .sort((x, y) => x - y)
+        .slice(0, k)
+        .reduce((x, y) => x + y, 0);
+      hi += list
+        .map((c) => c.hi[d]!)
+        .filter((x) => x > 0)
+        .sort((x, y) => y - x)
+        .slice(0, k)
+        .reduce((x, y) => x + y, 0);
+    }
+    return [lo, hi];
+  };
+  /** Poids des caractéristiques regroupées aux % critiques de cassure, et marge d'arrondi. */
+  let weighted: { weights: Float64Array[]; margin: number }[] | null = null;
+  const prepareWeighted = () => {
+    const [critMin, critHi] = withCrit ? featureRange(CRIT) : [0, 0];
+    // Un critique minimum exigé (100 % de critique) est respecté par tout stuff étudié.
+    const critLo = Math.max(critMin, input.minimums?.critical ?? -Infinity);
+    const finalLo = FINAL >= 0 ? featureRange(FINAL)[0] : 0;
+    const groups: { weights: Float64Array[]; margin: number }[] = [];
+    for (const group of spellGroups) {
+      if (group.length === 0) continue;
+      const pctDim = prepared.get(group[0]!)!.pct;
+      const pctLo = pctDim >= 0 ? featureRange(pctDim)[0] : 0;
+      const pMul = (100 + pctLo) / 100;
+      const fMul = (100 + finalLo) / 100;
+      // Multiplicateurs trop petits : la marge d'arrondi n'a plus de sens, on s'abstient.
+      if (pMul < 0.2 || fMul < 0.2) return null;
+      // Perte d'arrondi par ligne, rapportée aux multiplicateurs : moins de
+      // 1 (jet × caractéristique) + 1 / P (× % dommages), le tout multiplié par la
+      // part qui passe les résistances (plus de 1 sur une faiblesse), + 1 / P pour
+      // l'arrondi des % de résistance, + 1 / (F × P) (× % finaux).
+      const mMax = Math.max(
+        1,
+        ...group.flatMap((s) => prepared.get(s)!.lines.map((l) => resistMul(l.element))),
+      );
+      const perLine =
+        mMax * (1 + 1 / pMul) + (target ? 1 / pMul : 0) + (FINAL >= 0 ? 1 / (fMul * pMul) : 0);
+      let lines = 0;
+      const points = new Set([critLo, critHi]);
+      for (const s of group) {
+        const p = prepared.get(s)!;
+        lines += p.lines.length;
+        for (const at of [-p.critBase, 100 - p.critBase]) {
+          if (at > critLo && at < critHi) points.add(at);
+        }
+      }
+      const weights = [...(withCrit ? points : [0])].map((crit) => {
+        const w = new Float64Array(D);
+        for (const s of group) {
+          const p = prepared.get(s)!;
+          const chance = withCrit ? Math.min(100, Math.max(0, p.critBase + crit)) / 100 : 0;
+          for (const line of p.lines) {
+            const critRoll = line.crit ?? line.normal;
+            const m = resistMul(line.element);
+            w[line.stat]! += (m * (line.normal + chance * (critRoll - line.normal))) / 100;
+            w[line.damage]! += m;
+            if (withCrit && line.crit !== null) w[CRIT_DMG]! += m * chance;
+          }
+        }
+        return w;
+      });
+      groups.push({ weights, margin: lines * perLine + 1e-9 });
+    }
+    return groups;
+  };
+  /** b (apport minimal bLo) fait-il toujours mieux que a (apport maximal aHi) ? */
+  const beatsWeighted = (bLo: Vec, aHi: Vec) => {
+    if (!weighted) return false;
+    for (const d of multDims) if (bLo[d]! < aHi[d]!) return false;
+    for (const { weights, margin } of weighted) {
+      for (const w of weights) {
+        let gain = 0;
+        for (const d of blockDims) gain += w[d]! * (bLo[d]! - aHi[d]!);
+        if (gain < margin) return false;
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Panoplies entières. Un objet de panoplie vaut son apport plus, au mieux, le
+   * meilleur gain de bonus : comparé seul, il est presque impossible à écarter.
+   * On compare donc la panoplie entière : chaque objet reçoit des remplaçants
+   * hors panoplie, sans condition, qui font au moins aussi bien sur les
+   * multiplicateurs ; si, pour tout nombre n d'objets portés, les n pires
+   * objets plus le bonus à n objets font moins bien que leurs remplaçants (avec
+   * la marge d'arrondi), aucun stuff optimal n'a besoin de cette panoplie.
+   * Sur un emplacement multiple (anneaux), on retient le moins bon de k
+   * remplaçants : l'un d'eux est forcément libre.
+   */
+  const blockScore = (v: Vec) => {
+    let score = 0;
+    for (const { weights } of weighted ?? []) {
+      let worst = Infinity;
+      for (const w of weights) {
+        let x = 0;
+        for (const d of blockDims) x += w[d]! * v[d]!;
+        worst = Math.min(worst, x);
+      }
+      score += worst;
+    }
+    return score;
+  };
+  const strategies: ((v: Vec) => number)[] = [
+    blockScore,
+    // Variante : d'abord les PA et le % critique (bonus de panoplie souvent en PA).
+    (v) => v[AP]! * 1e6 + (CRIT >= 0 ? v[CRIT]! * 1e3 : 0) + blockScore(v),
+  ];
+  const pruneSets = (): number => {
+    if (!weighted) return 0;
+    const members = new Map<number, Cand[]>();
+    for (const list of byFamily.values()) {
+      for (const c of list) if (c.set >= 0) members.set(c.set, [...(members.get(c.set) ?? []), c]);
+    }
+    const doomed = new Set<Cand>();
+    for (const [set, list] of members) {
+      if (list.some((c) => forcedIds.has(c.id))) continue;
+      const tiers = setTiers[set]!;
+      const maxN = Math.min(list.length, tiers.length - 1);
+      const useless = strategies.some((score) => {
+        // Remplaçant garanti de chaque objet : le moins bon de k rivaux libres.
+        const subs: Vec[] = [];
+        for (const a of list) {
+          const family = a.item.family as SlotFamily;
+          const k = slotsOf(family);
+          const rivals = (byFamily.get(family) ?? [])
+            .filter(
+              (r) =>
+                r.set !== a.set &&
+                r.criteriaKey === null &&
+                !r.prysma &&
+                !forcedIds.has(r.id) &&
+                multDims.every((d) => r.lo[d]! >= a.v[d]!) &&
+                safeSwap(a, r),
+            )
+            .sort((x, y) => score(y.lo) - score(x.lo))
+            .slice(0, k);
+          if (rivals.length < k) return false;
+          const sub = new Float64Array(D);
+          for (let d = 0; d < D; d++) sub[d] = Math.min(...rivals.map((r) => r.lo[d]!));
+          subs.push(sub);
+        }
+        const topSum = (values: number[], n: number) =>
+          values
+            .sort((x, y) => y - x)
+            .slice(0, n)
+            .reduce((x, y) => x + y, 0);
+        for (let n = 1; n <= maxN; n++) {
+          const bonus = tiers[n]!;
+          for (const d of multDims) {
+            const loss = topSum(
+              list.map((a, i) => a.v[d]! - subs[i]![d]!),
+              n,
+            );
+            if (loss + bonus[d]! > 0) return false;
+          }
+          for (const { weights, margin } of weighted!) {
+            for (const w of weights) {
+              const gainOf = (a: Cand, i: number) => {
+                let g = 0;
+                for (const d of blockDims) g += w[d]! * (a.v[d]! - subs[i]![d]!);
+                return g;
+              };
+              let bonusGain = 0;
+              for (const d of blockDims) bonusGain += w[d]! * bonus[d]!;
+              if (topSum(list.map(gainOf), n) + bonusGain + margin > 0) return false;
+            }
+          }
+        }
+        return true;
+      });
+      if (useless) list.forEach((c) => doomed.add(c));
+    }
+    if (doomed.size === 0) return 0;
+    for (const [family, list] of byFamily) {
+      byFamily.set(
+        family,
+        list.filter((c) => !doomed.has(c)),
+      );
+    }
+    return doomed.size;
+  };
+
   // Dominance : b remplace a sans perte si son apport minimal ≥ l'apport maximal de a.
   // On recommence tant que des objets tombent : moins de candidats, moins de
   // conditions en jeu, donc de nouveaux remplacements sûrs.
@@ -633,17 +865,18 @@ export function buildDamageModel(input: DamageModelInput) {
       byFamily.set(family, kept);
     }
     countDirections([...byFamily.values()].flat());
+    weighted = prepareWeighted();
     for (const [family, list] of byFamily) {
       const k = slotsOf(family);
       const kept = list.filter((a) => {
         if (forcedIds.has(a.id)) return true;
         // L'emplacement vide fait au moins aussi bien.
-        if (geq(zero, a.hi) && safeSwap(a, null)) return false;
+        if ((geq(zero, a.hi) || beatsWeighted(zero, a.hi)) && safeSwap(a, null)) return false;
         let plain = 0;
         let prysma = 0;
         for (const b of list) {
           if (b === a || (a.set >= 0 && b.set === a.set)) continue;
-          if (!geq(b.lo, a.hi) || !safeSwap(a, b)) continue;
+          if (!(geq(b.lo, a.hi) || beatsWeighted(b.lo, a.hi)) || !safeSwap(a, b)) continue;
           // Égalité parfaite : on n'en garde qu'un (le plus petit identifiant).
           if (equal(b.lo, a.hi) && equal(a.lo, b.hi) && b.id > a.id) continue;
           if (b.prysma) prysma++;
@@ -656,6 +889,7 @@ export function buildDamageModel(input: DamageModelInput) {
       kept.sort((a, b) => b.proxy - a.proxy);
       byFamily.set(family, kept);
     }
+    removed += pruneSets();
     if (removed === 0) break;
   }
   for (const [family, list] of byFamily) {
@@ -738,6 +972,8 @@ export function buildDamageModel(input: DamageModelInput) {
   }
 
   return {
+    target,
+    resistMul,
     forcedIds,
     missingForced,
     feasible,

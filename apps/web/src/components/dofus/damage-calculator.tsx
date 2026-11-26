@@ -4,6 +4,8 @@ import * as React from "react";
 import {
   ArrowDownWideNarrow,
   Calculator,
+  Minus,
+  Plus,
   Crosshair,
   Hand,
   Loader2,
@@ -22,6 +24,7 @@ import {
   topCombos,
   turnSpells,
   weaponGrade,
+  withChargeBonus,
   type DofusItem,
   withoutConditionalLines,
   type BuildElementTag,
@@ -40,6 +43,7 @@ import {
 } from "@/components/ui/dialog";
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { CombatBuffs, withBuffs, type ActiveBuff } from "./combat-buffs";
 import { StatIcon, statTone } from "./stat-icon";
 import { ElementTagPicker, RemoteIcon, useBreeds } from "./tags";
 
@@ -89,10 +93,23 @@ function SpellCard({
   attack: Attack;
   sortBy: SortKey | null;
 }) {
-  const grade = spellGradeAt(spell, level);
+  const baseGrade = spellGradeAt(spell, level);
   const firstLevel = spell.grades[0]?.minLevel ?? 1;
+  // Charges : le jet de base augmente ; le tri et les meilleurs tours restent à 0 charge.
+  const charges = baseGrade?.lines.length ? baseGrade.charges : undefined;
+  // Palier choisi : 0 = sans charge, k = k-ième palier.
+  const [charge, setCharge] = React.useState(0);
+  const steps = charges?.steps ?? [];
+  const count = Math.min(charge, steps.length);
+  const step = count > 0 ? steps[count - 1]! : null;
+  const bonus = step?.bonus ?? 0;
+  const last = steps.at(-1)?.at ?? 0;
+  const turn = charges?.unit === "turn";
+  const grade = baseGrade ? withChargeBonus(baseGrade, bonus) : null;
   const damage =
     grade && grade.lines.length > 0 ? computeSpellDamage(totals, gradeFor(grade, attack)) : null;
+  const uncharged =
+    count > 0 && baseGrade ? computeSpellDamage(totals, gradeFor(baseGrade, attack)) : null;
   const values = spellValues(spell, level, totals, attack);
 
   const range = grade
@@ -226,6 +243,40 @@ function SpellCard({
           </tbody>
         </table>
       )}
+      {damage && charges && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t pt-1.5 text-xs">
+          <span className="text-muted-foreground">{turn ? "Tours d'attente" : "Charges"}</span>
+          <button
+            type="button"
+            onClick={() => setCharge(Math.max(0, count - 1))}
+            disabled={count === 0}
+            className="rounded border p-0.5 hover:bg-accent disabled:opacity-40"
+            aria-label="Une charge de moins"
+          >
+            <Minus className="size-3" aria-hidden="true" />
+          </button>
+          <span className="min-w-8 text-center font-semibold tabular-nums">
+            {step?.at ?? 0}/{last}
+            {charges.unlimited ? "+" : ""}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCharge(Math.min(steps.length, count + 1))}
+            disabled={count >= steps.length}
+            className="rounded border p-0.5 hover:bg-accent disabled:opacity-40"
+            aria-label="Une charge de plus"
+          >
+            <Plus className="size-3" aria-hidden="true" />
+          </button>
+          <span className="text-muted-foreground">
+            {step
+              ? `+${bonus} dégâts de base · sans ${turn ? "attente" : "charge"} : moy. ${uncharged!.average}`
+              : turn
+                ? `+${steps[0]!.bonus} dégâts de base après ${steps[0]!.at} tour${steps[0]!.at > 1 ? "s" : ""}`
+                : `+${steps[0]!.bonus} dégâts de base par charge`}
+          </span>
+        </div>
+      )}
     </li>
   );
 }
@@ -235,7 +286,7 @@ function SpellCard({
  * caractéristiques finales du stuff (cible sans résistances).
  */
 export function DamageCalculator({
-  totals,
+  totals: stuffTotals,
   level,
   breedId,
   onBreedChange,
@@ -261,6 +312,8 @@ export function DamageCalculator({
   const [attack, setAttack] = React.useState<Attack>("auto");
   const [sortBy, setSortBy] = React.useState<SortKey | null>(null);
   const [pickingClass, setPickingClass] = React.useState(false);
+  const [buffs, setBuffs] = React.useState<ActiveBuff[]>([]);
+  const totals = React.useMemo(() => withBuffs(stuffTotals, buffs), [stuffTotals, buffs]);
   const filtered = elements.length > 0 || attack !== "auto" || sortBy !== null;
   const resetFilters = () => {
     setElements([]);
@@ -268,12 +321,21 @@ export function DamageCalculator({
     setSortBy(null);
   };
 
+  // Sorts par classe, chargés une fois (classe du personnage, ou d'un allié pour les boosts).
+  const requested = React.useRef(new Set<number>());
+  const requestSpells = React.useCallback((id: number) => {
+    if (requested.current.has(id)) return;
+    requested.current.add(id);
+    apiFetch<{ spells: DofusSpell[] }>(`/dofus/classes/${id}/spells`)
+      .then((data) => setSpells((m) => ({ ...m, [id]: data.spells })))
+      .catch((e: unknown) => {
+        requested.current.delete(id);
+        setError(e instanceof ApiError ? e.message : "Sorts indisponibles.");
+      });
+  }, []);
   React.useEffect(() => {
-    if (!open || breedId === null || spells[breedId]) return;
-    apiFetch<{ spells: DofusSpell[] }>(`/dofus/classes/${breedId}/spells`)
-      .then((data) => setSpells((m) => ({ ...m, [breedId]: data.spells })))
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : "Sorts indisponibles."));
-  }, [open, breedId, spells]);
+    if (open && breedId !== null) requestSpells(breedId);
+  }, [open, breedId, requestSpells]);
 
   // Le coup de l'arme, présenté comme un sort (identifiant négatif : jamais un vrai sort).
   const weaponSpell: DofusSpell | null = weapon?.weapon
@@ -338,7 +400,8 @@ export function DamageCalculator({
         <div>
           <DialogTitle>Calcul des dégâts{breed ? ` — ${breed.name}` : ""}</DialogTitle>
           <DialogDescription className="mt-1">
-            Dégâts des sorts au niveau {level} avec ce stuff, sur une cible sans résistances.
+            Dégâts des sorts au niveau {level} avec ce stuff
+            {buffs.length > 0 ? " et les boosts choisis" : ""}, sur une cible sans résistances.
           </DialogDescription>
         </div>
 
@@ -471,6 +534,16 @@ export function DamageCalculator({
             </Button>
           </div>
         </div>
+
+        <CombatBuffs
+          value={buffs}
+          onChange={setBuffs}
+          level={level}
+          breeds={breeds}
+          breedId={breedId}
+          spells={spells}
+          requestSpells={requestSpells}
+        />
 
         {showTurns && breedId !== null && (
           <section aria-label="Meilleurs tours" className="rounded-lg border bg-card/50 p-3">

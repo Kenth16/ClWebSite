@@ -220,6 +220,25 @@
       0 1px 2px rgb(0 0 0 / 0.04);
   }
 
+  /*
+   * Cadre façon interface de Dofus : liseré sombre à l'extérieur, filet doré à
+   * l'intérieur, séparés par un trait de la couleur du fond (double bordure).
+   */
+  .frame-dofus {
+    border-radius: 0.5rem;
+    border: 1px solid color-mix(in oklab, var(--gold) 45%, transparent);
+    box-shadow:
+      0 0 0 1px rgb(0 0 0 / 0.35),
+      inset 0 0 0 2px var(--card),
+      inset 0 0 0 3px color-mix(in oklab, var(--gold) 22%, transparent);
+  }
+  /* Élément actif dans un cadre Dofus : filet doré plus marqué et léger halo intérieur. */
+  .frame-dofus-active {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklab, var(--gold) 70%, transparent),
+      inset 0 0 10px var(--gold-soft);
+  }
+
   /* Petit losange doré utilisé comme puce décorative. */
   .rune {
     @apply inline-block size-1.5 rotate-45 bg-gold/70;

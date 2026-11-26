@@ -5,6 +5,7 @@ import {
   bestComboDamage,
   STATS,
   computeSpellDamage,
+  type DamageTarget,
   type SpellGrade,
   type StatTotals,
   turnSpells,
@@ -74,11 +75,11 @@ function rng(seed: number) {
 }
 
 /** Dégâts moyens exacts d'un lancer (formule du jeu, arrondis à l'inférieur, sans arrondir la moyenne). */
-function exactPerCast(t: (k: StatKey) => number, grade: SpellGrade): number {
+function exactPerCast(t: (k: StatKey) => number, grade: SpellGrade, target?: DamageTarget): number {
   const totals = Object.fromEntries(
     Object.keys(STATS).map((k) => [k, t(k as StatKey)]),
   ) as StatTotals;
-  const r = computeSpellDamage(totals, grade);
+  const r = computeSpellDamage(totals, grade, target);
   const p = r.criticalChance / 100;
   return r.lines.reduce((sum, l) => {
     const normal = (l.normal.min + l.normal.max) / 2;
@@ -463,6 +464,247 @@ describe("optimiseur MILP", () => {
       expect(result.proven).toBe(true);
       if (best === -Infinity) expect(result.damage).toBe(-Infinity);
       else expect(result.damage).toBeCloseTo(best, 5);
+    }
+  }, 120_000);
+
+  it("dominance pondérée : deux éléments, % finaux, beaucoup d'objets proches, comme une recherche exhaustive", async () => {
+    const twoElements = (id: number, element: "earth" | "fire", min: number, crit: number) => ({
+      ...spellOf(id, id, 3, min, 6, crit),
+      grades: [
+        {
+          grade: 1,
+          minLevel: 1,
+          apCost: 3,
+          minRange: 1,
+          range: 6,
+          criticalChance: crit,
+          maxCastsPerTurn: 1,
+          lines: [{ element, kind: "damage" as const, min, max: min + 5 }],
+          criticalLines: [{ element, kind: "damage" as const, min: min + 4, max: min + 9 }],
+        },
+      ],
+    });
+    for (let seed = 1; seed <= 12; seed++) {
+      const r = rng(seed * 31);
+      const rotation = turnSpells(
+        [twoElements(1, "earth", 18, 10), twoElements(2, "fire", 25, 25)],
+        100,
+        ["earth", "fire"],
+        12,
+      );
+      // Multiplicateurs peu variés (souvent égaux) : seule la dominance pondérée tranche.
+      const stat = (): Partial<Record<StatKey, number>> => ({
+        strength: Math.floor(r() * 60),
+        intelligence: Math.floor(r() * 60),
+        power: Math.floor(r() * 20),
+        damage: Math.floor(r() * 4),
+        earthDamage: Math.floor(r() * 6),
+        fireDamage: Math.floor(r() * 6),
+        criticalDamage: Math.floor(r() * 6),
+        critical: r() < 0.3 ? 5 : 0,
+        rangedDamagePct: r() < 0.3 ? 4 : 0,
+        ...(r() < 0.15 ? { finalDamagePct: 3 } : {}),
+      });
+      const hats = [1, 2, 3, 4, 5, 6, 7].map((id) => item(id, "hat", stat()));
+      const cloaks = [8, 9, 10, 11, 12, 13].map((id) => item(id, "cloak", stat()));
+      const rings = [14, 15, 16, 17, 18, 19].map((id) => item(id, "ring", stat()));
+      const items = [...hats, ...cloaks, ...rings];
+      const base: StatWeights = { ap: 9, strength: 100, intelligence: 100 };
+
+      let best = -Infinity;
+      const opt = <T>(l: T[]) => [null, ...l];
+      for (const h of opt(hats))
+        for (const c of opt(cloaks))
+          for (const r1 of opt(rings))
+            for (const r2 of opt(rings)) {
+              if (r1 && r2 && r1.id >= r2.id) continue;
+              if (!r1 && r2) continue;
+              const totals = new Map<StatKey, number>(Object.entries(base) as [StatKey, number][]);
+              for (const i of [h, c, r1, r2]) {
+                for (const e of i?.effects ?? []) {
+                  if (e.stat) totals.set(e.stat, (totals.get(e.stat) ?? 0) + e.value);
+                }
+              }
+              const t = (k: StatKey) => totals.get(k) ?? 0;
+              const damage = rotation.reduce(
+                (sum, sp) => sum + exactPerCast(t, { ...sp.grade, range: 6 }),
+                0,
+              );
+              best = Math.max(best, damage);
+            }
+
+      const input = {
+        level: 200,
+        elements: ["earth", "fire"] as ("earth" | "fire")[],
+        ap: 9,
+        base,
+        spells: rotation,
+        items,
+        sets: [],
+        mode: "rotation" as const,
+        attack: "ranged" as const,
+      };
+      const result = await optimizeTurnDamageMilp({ ...input, keep: 5 });
+      expect(result.proven).toBe(true);
+      expect(result.damage).toBeCloseTo(best, 5);
+      // Stuffs gardés : le premier est l'optimum, puis des stuffs différents, du meilleur au moins bon.
+      expect(result.found.length).toBeGreaterThan(0);
+      expect(result.found.length).toBeLessThanOrEqual(5);
+      expect(result.found[0]!.damage).toBeCloseTo(best, 5);
+      const keys = result.found.map((f) => Object.values(f.slots).sort().join(","));
+      expect(new Set(keys).size).toBe(keys.length);
+      for (let i = 1; i < result.found.length; i++) {
+        expect(result.found[i]!.damage).toBeLessThanOrEqual(result.found[i - 1]!.damage);
+      }
+      // La dominance pondérée écarte bien des objets que la comparaison par caractéristique garde.
+      expect(result.candidates).toBeLessThan(items.length);
+    }
+  }, 120_000);
+
+  it("100 % de critique exigé : même optimum qu'une recherche exhaustive", async () => {
+    for (let seed = 1; seed <= 10; seed++) {
+      const r = rng(seed * 17);
+      const stat = (): Partial<Record<StatKey, number>> => ({
+        strength: Math.floor(r() * 60),
+        power: Math.floor(r() * 20),
+        damage: Math.floor(r() * 6),
+        critical: Math.floor(r() * 30),
+        criticalDamage: Math.floor(r() * 15),
+        rangedDamagePct: Math.floor(r() * 6),
+      });
+      const hats = [1, 2, 3, 4].map((id) => item(id, "hat", stat()));
+      const cloaks = [5, 6, 7].map((id) => item(id, "cloak", stat()));
+      const rings = [8, 9, 10, 11].map((id) => item(id, "ring", stat()));
+      const items = [...hats, ...cloaks, ...rings];
+      const rotation = turnSpells(raw, 100, ["earth"], 12).map((s) => ({ ...s, limit: 1 }));
+      const base: StatWeights = { ap: 9, strength: 200, critical: 20 };
+      // Sorts à 5 % de critique au moins : il faut 95 % de critique pour toujours critiquer.
+      const required = 100 - Math.min(...rotation.map((s) => s.grade.criticalChance));
+
+      let best = -Infinity;
+      const opt = <T>(l: T[]) => [null, ...l];
+      for (const h of opt(hats))
+        for (const c of opt(cloaks))
+          for (const r1 of opt(rings))
+            for (const r2 of opt(rings)) {
+              if (r1 && r2 && r1.id >= r2.id) continue;
+              if (!r1 && r2) continue;
+              const totals = new Map<StatKey, number>(Object.entries(base) as [StatKey, number][]);
+              for (const i of [h, c, r1, r2]) {
+                for (const e of i?.effects ?? []) {
+                  if (e.stat) totals.set(e.stat, (totals.get(e.stat) ?? 0) + e.value);
+                }
+              }
+              const t = (k: StatKey) => totals.get(k) ?? 0;
+              if (t("critical") < required) continue;
+              const damage = rotation.reduce(
+                (sum, sp) => sum + exactPerCast(t, { ...sp.grade, range: 6 }),
+                0,
+              );
+              best = Math.max(best, damage);
+            }
+
+      const result = await optimizeTurnDamageMilp({
+        level: 200,
+        elements: ["earth"],
+        ap: 9,
+        base,
+        spells: rotation,
+        items,
+        sets: [],
+        mode: "rotation",
+        attack: "ranged",
+        minimums: { critical: required },
+      });
+      expect(result.proven).toBe(true);
+      if (best === -Infinity) expect(result.damage).toBe(-Infinity);
+      else expect(result.damage).toBeCloseTo(best, 5);
+    }
+  }, 120_000);
+
+  it("cible avec résistances, faiblesse et résistances fixes : même optimum qu'une recherche exhaustive", async () => {
+    const target: DamageTarget = {
+      pct: { neutral: 0, earth: 30, fire: -20, water: 0, air: 0 },
+      flat: { neutral: 0, earth: 6, fire: -4, water: 0, air: 0 },
+      critical: 5,
+    };
+    const lineSpell = (id: number, element: "earth" | "fire", min: number, crit: number) => ({
+      ...spellOf(id, id, 3, min, 6, crit),
+      grades: [
+        {
+          grade: 1,
+          minLevel: 1,
+          apCost: 3,
+          minRange: 1,
+          range: 6,
+          criticalChance: crit,
+          maxCastsPerTurn: 1,
+          lines: [{ element, kind: "damage" as const, min, max: min + 5 }],
+          criticalLines: [{ element, kind: "damage" as const, min: min + 4, max: min + 9 }],
+        },
+      ],
+    });
+    for (let seed = 1; seed <= 10; seed++) {
+      const r = rng(seed * 43);
+      const rotation = turnSpells(
+        [lineSpell(1, "earth", 20, 15), lineSpell(2, "fire", 16, 25)],
+        100,
+        ["earth", "fire"],
+        12,
+      );
+      const stat = (): Partial<Record<StatKey, number>> => ({
+        strength: Math.floor(r() * 80),
+        intelligence: Math.floor(r() * 80),
+        power: Math.floor(r() * 20),
+        earthDamage: Math.floor(r() * 10),
+        fireDamage: Math.floor(r() * 10),
+        criticalDamage: Math.floor(r() * 8),
+        critical: r() < 0.3 ? 5 : 0,
+        rangedDamagePct: r() < 0.4 ? Math.floor(r() * 8) : 0,
+        ...(r() < 0.2 ? { finalDamagePct: 4 } : {}),
+      });
+      const hats = [1, 2, 3, 4, 5].map((id) => item(id, "hat", stat()));
+      const cloaks = [6, 7, 8, 9].map((id) => item(id, "cloak", stat()));
+      const rings = [10, 11, 12, 13, 14].map((id) => item(id, "ring", stat()));
+      const items = [...hats, ...cloaks, ...rings];
+      const base: StatWeights = { ap: 9, strength: 100, intelligence: 100 };
+
+      let best = -Infinity;
+      const opt = <T>(l: T[]) => [null, ...l];
+      for (const h of opt(hats))
+        for (const c of opt(cloaks))
+          for (const r1 of opt(rings))
+            for (const r2 of opt(rings)) {
+              if (r1 && r2 && r1.id >= r2.id) continue;
+              if (!r1 && r2) continue;
+              const totals = new Map<StatKey, number>(Object.entries(base) as [StatKey, number][]);
+              for (const i of [h, c, r1, r2]) {
+                for (const e of i?.effects ?? []) {
+                  if (e.stat) totals.set(e.stat, (totals.get(e.stat) ?? 0) + e.value);
+                }
+              }
+              const t = (k: StatKey) => totals.get(k) ?? 0;
+              const damage = rotation.reduce(
+                (sum, sp) => sum + exactPerCast(t, { ...sp.grade, range: 6 }, target),
+                0,
+              );
+              best = Math.max(best, damage);
+            }
+
+      const result = await optimizeTurnDamageMilp({
+        level: 200,
+        elements: ["earth", "fire"],
+        ap: 9,
+        base,
+        spells: rotation,
+        items,
+        sets: [],
+        mode: "rotation",
+        attack: "ranged",
+        target,
+      });
+      expect(result.proven).toBe(true);
+      expect(result.damage).toBeCloseTo(best, 5);
     }
   }, 120_000);
 });
