@@ -246,11 +246,14 @@ export function OptimizerBoard({
   const t = (k: StatKey) => (totals ? totals[k] : null);
   const level = settings.level;
 
+  const bannedIds = new Set(rules.banned.map((i) => i.id));
   const slotItem = (slot: SlotId): { item: DofusItem | null; forced: boolean } => {
     const forced = rules.forced[slot];
     if (forced) return { item: forced, forced: true };
     const id = stuff?.slots[slot];
-    return { item: id !== undefined ? (itemById.get(id) ?? null) : null, forced: false };
+    // Objet interdit (Ctrl + clic) : il quitte aussitôt sa case, même dans un stuff trouvé.
+    if (id === undefined || bannedIds.has(id)) return { item: null, forced: false };
+    return { item: itemById.get(id) ?? null, forced: false };
   };
   const forcedCount = Object.keys(rules.forced).length;
 

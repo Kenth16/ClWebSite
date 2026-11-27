@@ -4,8 +4,7 @@ import * as React from "react";
 import {
   ArrowDownWideNarrow,
   Calculator,
-  Minus,
-  Plus,
+  Shapes,
   Crosshair,
   Hand,
   Loader2,
@@ -25,11 +24,16 @@ import {
   turnSpells,
   weaponGrade,
   withChargeBonus,
+  withAllMp,
+  withoutMpLines,
+  hasMpLines,
+  zoneLabel,
   type DofusItem,
   withoutConditionalLines,
   type BuildElementTag,
   type DofusElement,
   type DofusSpell,
+  type SpellDamage,
   type SpellGrade,
   type StatTotals,
 } from "@kenpai/shared";
@@ -70,7 +74,9 @@ function gradeFor(grade: SpellGrade, attack: Attack): SpellGrade {
 
 /** Valeurs de tri d'un sort (null : pas de dégâts à ce niveau). */
 function spellValues(spell: DofusSpell, level: number, totals: StatTotals, attack: Attack) {
-  const grade = spellGradeAt(spell, level);
+  const found = spellGradeAt(spell, level);
+  // Tri sans PM restant (lignes « selon PM restants » écartées), comme le calcul principal.
+  const grade = found ? withoutMpLines(found) : null;
   if (!grade || grade.lines.length === 0) return null;
   const base = grade.lines.reduce((sum, l) => sum + (l.min + l.max) / 2, 0);
   const computed = computeSpellDamage(totals, gradeFor(grade, attack)).average;
@@ -79,6 +85,81 @@ function spellValues(spell: DofusSpell, level: number, totals: StatTotals, attac
 
 const fmtRange = (r: { min: number; max: number }) =>
   r.min === r.max ? String(r.min) : `${r.min} – ${r.max}`;
+
+/** Lignes de dégâts d'un sort : élément, jet normal et jet critique. */
+function DamageLines({ damage }: { damage: SpellDamage }) {
+  return (
+    <table className="w-full text-sm">
+      <thead className="sr-only">
+        <tr>
+          <th>Élément</th>
+          <th>Normal</th>
+          <th>Critique</th>
+        </tr>
+      </thead>
+      <tbody>
+        {damage.lines.map((line, i) => {
+          const element = ELEMENTS[line.element];
+          return (
+            <tr key={i}>
+              <td className="py-0.5">
+                <span className="flex items-center gap-1.5">
+                  <StatIcon stat={element.damage} className="size-3.5" />
+                  <span className="sr-only">{element.label}</span>
+                  <span className={cn("font-semibold tabular-nums", statTone(element.damage))}>
+                    {fmtRange(line.normal)}
+                  </span>
+                  {line.kind === "steal" && (
+                    <span className="text-xs text-muted-foreground">(vol)</span>
+                  )}
+                  {line.pick && (
+                    <span
+                      className="rounded border border-gold/40 bg-gold-soft px-1 text-[0.65rem] text-gold"
+                      title={
+                        line.pick === "best"
+                          ? "Frappe dans l'élément qui fait le plus de dégâts avec ce stuff"
+                          : "Frappe dans l'élément qui fait le moins de dégâts avec ce stuff"
+                      }
+                    >
+                      {line.pick === "best" ? "meilleur élément" : "pire élément"}
+                    </span>
+                  )}
+                  {line.condition && (
+                    <span
+                      className="rounded border px-1 text-[0.65rem] text-muted-foreground"
+                      title={LINE_CONDITION_LABELS[line.condition].help}
+                    >
+                      {LINE_CONDITION_LABELS[line.condition].label}
+                    </span>
+                  )}
+                </span>
+              </td>
+              <td className="py-0.5 pl-3">
+                {line.critical ? (
+                  <span
+                    className="flex items-center justify-end gap-1.5"
+                    title="Dégâts en coup critique"
+                  >
+                    <StatIcon stat="critical" className="size-3.5" />
+                    <span className="sr-only">Critique :</span>
+                    <span className={cn("tabular-nums", statTone(element.damage))}>
+                      {fmtRange(line.critical)}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="block text-right text-muted-foreground">—</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/** Charges listées au plus quand le jeu ne fixe pas de limite de cumul. */
+const UNLIMITED_SHOWN = 3;
 
 function SpellCard({
   spell,
@@ -93,23 +174,19 @@ function SpellCard({
   attack: Attack;
   sortBy: SortKey | null;
 }) {
-  const baseGrade = spellGradeAt(spell, level);
+  const fullGrade = spellGradeAt(spell, level);
+  // Dégâts selon les PM restants (Zénith) : calcul principal sans PM restant, comme
+  // l'optimiseur ; un bloc à part montre le sort lancé avec tous ses PM.
+  const fullMp = fullGrade && hasMpLines(fullGrade) ? withAllMp(fullGrade) : null;
+  const grade = fullMp ? withoutMpLines(fullGrade!) : fullGrade;
   const firstLevel = spell.grades[0]?.minLevel ?? 1;
-  // Charges : le jet de base augmente ; le tri et les meilleurs tours restent à 0 charge.
-  const charges = baseGrade?.lines.length ? baseGrade.charges : undefined;
-  // Palier choisi : 0 = sans charge, k = k-ième palier.
-  const [charge, setCharge] = React.useState(0);
-  const steps = charges?.steps ?? [];
-  const count = Math.min(charge, steps.length);
-  const step = count > 0 ? steps[count - 1]! : null;
-  const bonus = step?.bonus ?? 0;
-  const last = steps.at(-1)?.at ?? 0;
-  const turn = charges?.unit === "turn";
-  const grade = baseGrade ? withChargeBonus(baseGrade, bonus) : null;
   const damage =
     grade && grade.lines.length > 0 ? computeSpellDamage(totals, gradeFor(grade, attack)) : null;
-  const uncharged =
-    count > 0 && baseGrade ? computeSpellDamage(totals, gradeFor(baseGrade, attack)) : null;
+  // Charges (ou tours d'attente) : un bloc de dégâts par palier, comme sur DofusBook.
+  // Le tri et les meilleurs tours restent sans charge.
+  const charges = damage ? grade!.charges : undefined;
+  const turn = charges?.unit === "turn";
+  const steps = (charges?.steps ?? []).slice(0, charges?.unlimited ? UNLIMITED_SHOWN : undefined);
   const values = spellValues(spell, level, totals, attack);
 
   const range = grade
@@ -139,6 +216,12 @@ function SpellCard({
                 PO {range}
               </span>
               {damage && <span>{damage.criticalChance} % crit.</span>}
+              {grade.zone && (
+                <span className="flex items-center gap-0.5" title="Zone du sort">
+                  <Shapes className="size-3" aria-hidden="true" />
+                  {zoneLabel(grade.zone)}
+                </span>
+              )}
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">Disponible au niveau {firstLevel}.</p>
@@ -176,105 +259,39 @@ function SpellCard({
         )}
       </div>
       {damage && (
-        <table className="mt-1.5 w-full text-sm">
-          <thead className="sr-only">
-            <tr>
-              <th>Élément</th>
-              <th>Normal</th>
-              <th>Critique</th>
-            </tr>
-          </thead>
-          <tbody>
-            {damage.lines.map((line, i) => {
-              const element = ELEMENTS[line.element];
-              return (
-                <tr key={i}>
-                  <td className="py-0.5">
-                    <span className="flex items-center gap-1.5">
-                      <StatIcon stat={element.damage} className="size-3.5" />
-                      <span className="sr-only">{element.label}</span>
-                      <span className={cn("font-semibold tabular-nums", statTone(element.damage))}>
-                        {fmtRange(line.normal)}
-                      </span>
-                      {line.kind === "steal" && (
-                        <span className="text-xs text-muted-foreground">(vol)</span>
-                      )}
-                      {line.pick && (
-                        <span
-                          className="rounded border border-gold/40 bg-gold-soft px-1 text-[0.65rem] text-gold"
-                          title={
-                            line.pick === "best"
-                              ? "Frappe dans l'élément qui fait le plus de dégâts avec ce stuff"
-                              : "Frappe dans l'élément qui fait le moins de dégâts avec ce stuff"
-                          }
-                        >
-                          {line.pick === "best" ? "meilleur élément" : "pire élément"}
-                        </span>
-                      )}
-                      {line.condition && (
-                        <span
-                          className="rounded border px-1 text-[0.65rem] text-muted-foreground"
-                          title={LINE_CONDITION_LABELS[line.condition].help}
-                        >
-                          {LINE_CONDITION_LABELS[line.condition].label}
-                        </span>
-                      )}
-                    </span>
-                  </td>
-                  <td className="py-0.5 pl-3">
-                    {line.critical ? (
-                      <span
-                        className="flex items-center justify-end gap-1.5"
-                        title="Dégâts en coup critique"
-                      >
-                        <StatIcon stat="critical" className="size-3.5" />
-                        <span className="sr-only">Critique :</span>
-                        <span className={cn("tabular-nums", statTone(element.damage))}>
-                          {fmtRange(line.critical)}
-                        </span>
-                      </span>
-                    ) : (
-                      <span className="block text-right text-muted-foreground">—</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="mt-1.5">
+          {(charges || fullMp) && (
+            <p className="mb-0.5 text-[0.7rem] text-muted-foreground">
+              {[fullMp && "Aucun PM restant", charges && (turn ? "Sans attente" : "Sans charge")]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
+          <DamageLines damage={damage} />
+        </div>
       )}
-      {damage && charges && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t pt-1.5 text-xs">
-          <span className="text-muted-foreground">{turn ? "Tours d'attente" : "Charges"}</span>
-          <button
-            type="button"
-            onClick={() => setCharge(Math.max(0, count - 1))}
-            disabled={count === 0}
-            className="rounded border p-0.5 hover:bg-accent disabled:opacity-40"
-            aria-label="Une charge de moins"
-          >
-            <Minus className="size-3" aria-hidden="true" />
-          </button>
-          <span className="min-w-8 text-center font-semibold tabular-nums">
-            {step?.at ?? 0}/{last}
-            {charges.unlimited ? "+" : ""}
-          </span>
-          <button
-            type="button"
-            onClick={() => setCharge(Math.min(steps.length, count + 1))}
-            disabled={count >= steps.length}
-            className="rounded border p-0.5 hover:bg-accent disabled:opacity-40"
-            aria-label="Une charge de plus"
-          >
-            <Plus className="size-3" aria-hidden="true" />
-          </button>
-          <span className="text-muted-foreground">
-            {step
-              ? `+${bonus} dégâts de base · sans ${turn ? "attente" : "charge"} : moy. ${uncharged!.average}`
-              : turn
-                ? `+${steps[0]!.bonus} dégâts de base après ${steps[0]!.at} tour${steps[0]!.at > 1 ? "s" : ""}`
-                : `+${steps[0]!.bonus} dégâts de base par charge`}
-          </span>
+      {damage &&
+        steps.map((step) => (
+          <div key={step.at} className="mt-1.5 border-t pt-1.5">
+            <p className="mb-0.5 text-[0.7rem] text-muted-foreground">
+              {turn
+                ? `Après ${step.at} tour${step.at > 1 ? "s" : ""} d'attente`
+                : `${step.at} charge${step.at > 1 ? "s" : ""}`}
+              {charges?.unlimited && step === steps.at(-1) ? " (cumul sans limite)" : ""}
+              <span className="ml-1">· +{step.bonus} dégâts de base</span>
+            </p>
+            <DamageLines
+              damage={computeSpellDamage(
+                totals,
+                gradeFor(withChargeBonus(grade!, step.bonus), attack),
+              )}
+            />
+          </div>
+        ))}
+      {damage && fullMp && (
+        <div className="mt-1.5 border-t pt-1.5">
+          <p className="mb-0.5 text-[0.7rem] text-muted-foreground">100 % des PM restants</p>
+          <DamageLines damage={computeSpellDamage(totals, gradeFor(fullMp, attack))} />
         </div>
       )}
     </li>

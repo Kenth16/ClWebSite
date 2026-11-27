@@ -738,7 +738,7 @@ export function situationSummary(fight: OptimizerFight): { label: string; value:
         },
         {
           label: "Cumuls",
-          value: "Turquoise 7, Pourpre 3, Domakuro +32 ; les autres au maximum (Brâm, Sylvestre…)",
+          value: "Turquoise 7, Pourpre 3, Domakuro +32 ; les autres au maximum (Sylvestre…)",
         },
         { label: "Audace de Dodge", value: "Déplacé (+10 % Critique)" },
         { label: "PA, PM, PO gagnés en combat", value: "Non comptés (Ocre…)" },
@@ -753,6 +753,9 @@ const SHORT_CHOICES: SpecialChoices = {
   amayiro: "x4",
   "trompe-la-mort": "high",
   dodge: "moved",
+  // Le porteur frappe à chaque tour : Tacheté toujours actif ; Thanatena : l'aura seule.
+  tachete: "dealt",
+  thanatena: "aura",
 };
 /** Combat court : effets qui dépendent du tour (impair = tour 1, pair = tour 2). */
 const SHORT_TURN_CHOICES: Record<string, { odd: string; even: string }> = {
@@ -777,11 +780,12 @@ const LONG_CHOICES: SpecialChoices = {
   turquoise: "x7",
   pourpre: "x3",
   dodge: "moved",
+  tachete: "dealt",
+  thanatena: "aura",
   dofoozbz: "x10",
   domakuro: "x4",
   misere: "x4",
   jhessica: "x4",
-  bram: "x5",
   sylvestre: "x12",
 };
 /**

@@ -131,7 +131,8 @@ describe("équipements légendaires", () => {
 
 describe("situation de l'optimiseur", () => {
   const ids = [
-    7754, 6980, 20358, 32114, 32163, 20359, 8698, 739, 694, 29136, 22001, 22004, 20365, 23237,
+    7754, 6980, 20358, 32114, 32163, 20359, 8698, 739, 694, 29136, 22001, 22004, 20365, 23237, 7112,
+    32117,
   ].map((id) => ({ id }));
   const short = (turn: "odd" | "even" | "average") => scenarioBuffs(ids, { turn, fight: "short" });
   const long = scenarioBuffs(ids, { turn: "odd", fight: "long" });
@@ -188,6 +189,10 @@ describe("situation de l'optimiseur", () => {
     expect(long.get(739)).toEqual({ finalDamagePct: 7 }); // Turquoise : 7 cumuls
     expect(long.get(20365)).toEqual({ mp: 1, critical: 10 });
     expect(long.get(29136)).toEqual({ power: 96 });
-    expect(long.get(20359)).toEqual({ finalDamagePct: 10 });
+    expect(long.has(20359)).toBe(false); // Brâm : plus compté
+    for (const b of [short("odd"), short("even"), long]) {
+      expect(b.get(7112)).toEqual({ damage: 20 }); // Tacheté
+      expect(b.get(32117)).toEqual({ finalDamagePct: 4 }); // Thanatena : l'aura
+    }
   });
 });

@@ -25,25 +25,32 @@ export interface ActiveBuff {
   name: string;
   icon: string | null;
   breed: string;
-  lines: { line: SpellBuffLine; on: boolean }[];
+  /** Chaque ligne, sa version en coup critique (si elle diffère), comptée ou non. */
+  lines: { line: SpellBuffLine; critLine?: SpellBuffLine; on: boolean }[];
+  /** Boost lancé en coup critique (Puissance : 350 au lieu de 300). */
+  critical?: boolean;
 }
+
+/** La ligne retenue d'un boost : sa version critique si le boost est lancé en critique. */
+const activeLine = (b: ActiveBuff, l: ActiveBuff["lines"][number]) =>
+  b.critical && l.critLine ? l.critLine : l.line;
 
 /** Les caractéristiques du stuff avec les boosts comptés ajoutés. */
 export function withBuffs(totals: StatTotals, buffs: readonly ActiveBuff[]): StatTotals {
   if (buffs.length === 0) return totals;
   const next = { ...totals };
   for (const b of buffs) {
-    for (const { line, on } of b.lines) if (on) next[line.stat] += buffValue(line);
+    for (const l of b.lines) if (l.on) next[l.line.stat] += buffValue(activeLine(b, l));
   }
   return next;
 }
 
 const duration = (turns: number) =>
-  turns < 0 ? "tout le combat" : `${turns} tour${turns > 1 ? "s" : ""}`;
+  turns < 0 ? "tout le combat" : turns === 0 ? "ce tour" : `${turns} tour${turns > 1 ? "s" : ""}`;
 
 function lineLabel(line: SpellBuffLine) {
   const range = line.min === line.max ? `${line.min}` : `${line.min} à ${line.max}`;
-  return `+${range} ${STATS[line.stat]}`;
+  return line.label ? `+${range} % ${line.label}` : `+${range} ${STATS[line.stat]}`;
 }
 
 function BuffLineChip({
@@ -129,8 +136,13 @@ export function CombatBuffs({
     .filter(({ grade }) => (grade?.buffs?.length ?? 0) > 0);
   const sourceBreed = breeds?.find((b) => b.id === source);
 
-  function add(spell: DofusSpell, lines: SpellBuffLine[]) {
+  function add(spell: DofusSpell, lines: SpellBuffLine[], critLines?: SpellBuffLine[]) {
     if (value.some((b) => b.spellId === spell.id)) return;
+    // Version critique de chaque ligne : même place et même stat, sinon même stat.
+    const critOf = (line: SpellBuffLine, i: number) =>
+      critLines?.[i]?.stat === line.stat
+        ? critLines[i]
+        : critLines?.find((c) => c.stat === line.stat);
     onChange([
       ...value,
       {
@@ -138,7 +150,10 @@ export function CombatBuffs({
         name: spell.name,
         icon: spell.icon,
         breed: sourceBreed?.name ?? "",
-        lines: lines.map((line) => ({ line, on: !line.condition })),
+        lines: lines.map((line, i) => {
+          const critLine = critOf(line, i);
+          return { line, ...(critLine ? { critLine } : {}), on: !line.condition };
+        }),
       },
     ]);
   }
@@ -199,8 +214,44 @@ export function CombatBuffs({
               <RemoteIcon src={b.icon} className="size-6 shrink-0" />
               <span className="text-sm font-medium">{b.name}</span>
               {b.breed && <span className="text-xs text-muted-foreground">{b.breed}</span>}
-              {b.lines.map(({ line, on }, i) => (
-                <BuffLineChip key={i} line={line} on={on} onToggle={() => toggle(b.spellId, i)} />
+              {b.lines.some((l) => l.critLine) && (
+                <span
+                  className="inline-flex rounded-md border bg-muted/50 p-0.5 text-[0.7rem]"
+                  role="radiogroup"
+                  aria-label="Lancer du boost"
+                >
+                  {([false, true] as const).map((crit) => (
+                    <button
+                      key={String(crit)}
+                      type="button"
+                      role="radio"
+                      aria-checked={!!b.critical === crit}
+                      onClick={() =>
+                        onChange(
+                          value.map((x) =>
+                            x.spellId === b.spellId ? { ...x, critical: crit } : x,
+                          ),
+                        )
+                      }
+                      className={cn(
+                        "rounded px-1.5 py-0.5",
+                        !!b.critical === crit
+                          ? "bg-background font-medium shadow-sm"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {crit ? "Critique" : "Normal"}
+                    </button>
+                  ))}
+                </span>
+              )}
+              {b.lines.map((l, i) => (
+                <BuffLineChip
+                  key={i}
+                  line={activeLine(b, l)}
+                  on={l.on}
+                  onToggle={() => toggle(b.spellId, i)}
+                />
               ))}
               <button
                 type="button"
@@ -219,8 +270,9 @@ export function CombatBuffs({
         <DialogContent className="max-w-3xl gap-3">
           <DialogTitle>Ajouter un boost</DialogTitle>
           <DialogDescription>
-            Sorts qui donnent des caractéristiques au lanceur ou à un allié, au grade du niveau{" "}
-            {level}. Les lignes sous condition sont ajoutées sans être comptées.
+            Sorts qui donnent des caractéristiques au lanceur ou à un allié, ou qui rendent la cible
+            plus vulnérable, au grade du niveau {level}. Les lignes sous condition sont ajoutées
+            sans être comptées.
           </DialogDescription>
           <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Classe">
             {breeds?.map((b) => (
@@ -279,12 +331,17 @@ export function CombatBuffs({
                             <BuffLineChip key={i} line={line} />
                           ))}
                         </div>
+                        {grade!.criticalBuffs && (
+                          <p className="text-[0.7rem] text-muted-foreground">
+                            En critique : {grade!.criticalBuffs.map(lineLabel).join(", ")}
+                          </p>
+                        )}
                       </div>
                       <Button
                         size="sm"
                         variant={added ? "outline" : "default"}
                         disabled={added}
-                        onClick={() => add(spell, lines)}
+                        onClick={() => add(spell, lines, grade!.criticalBuffs)}
                       >
                         {added ? "Ajouté" : "Ajouter"}
                       </Button>

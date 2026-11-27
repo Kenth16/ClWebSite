@@ -10,6 +10,7 @@ import type {
   SpellCharges,
   SpellDamageLine,
   SpellGrade,
+  SpellZone,
   StatKey,
 } from "@kenpai/shared";
 import { HttpError } from "../../lib/errors";
@@ -39,6 +40,14 @@ const DAMAGE_EFFECTS: Record<
   2832: { element: "neutral", kind: "damage", pick: "worst" },
   2890: { element: "neutral", kind: "steal", pick: "worst" },
 };
+/** Dégâts proportionnels aux PM restants du lanceur (Zénith…), par élément. */
+const MP_DAMAGE_EFFECTS: Record<number, DofusElement> = {
+  1012: "neutral",
+  1013: "air",
+  1014: "water",
+  1015: "fire",
+  1016: "earth",
+};
 
 interface RawEffect {
   effectId: number;
@@ -55,8 +64,19 @@ interface RawEffect {
   /** Déclencheurs : « I » au lancer ; les autres (fin de tour, etc.) viennent plus tard. */
   triggers?: string;
   /** Zone : forme (code ASCII, 67 = cercle) et rayons (param2 : rayon minimal). */
-  zoneDescr?: { shape?: number; param2?: number } | null;
+  zoneDescr?: { shape?: number; param1?: number; param2?: number } | null;
 }
+
+/**
+ * Cibles ennemies d'un effet : tous les ennemis (A), les joueurs (L) ou les
+ * monstres (M) ennemis. Les autres lettres majuscules visent d'autres ennemis
+ * (invocations…), les minuscules des alliés ou le lanceur.
+ */
+const ENEMY_TARGETS = new Set(["A", "L", "M"]);
+const hitsEnemy = (tokens: string[]) => tokens.some((t) => ENEMY_TARGETS.has(t));
+/** Seulement d'autres ennemis (invocations…) : une variante selon la cible. */
+const hitsOtherEnemy = (tokens: string[]) =>
+  tokens.some((t) => /^[A-Z]$/.test(t) && !ENEMY_TARGETS.has(t) && t !== "C");
 
 /**
  * L'effet frappe-t-il la cible ennemie dès le lancer, sans condition particulière ?
@@ -72,7 +92,7 @@ export function appliesOnCast(e: RawEffect): boolean {
   const zone = e.zoneDescr;
   if (zone && ((zone.shape === 67 && (zone.param2 ?? 0) > 0) || zone.shape === 79)) return false;
   const tokens = (e.targetMask ?? "A").split(",").map((t) => t.trim().replace(/^\*/, ""));
-  if (!tokens.includes("A")) return false;
+  if (!hitsEnemy(tokens)) return false;
   return !tokens.some((t) => /^[A-Z]\d+/.test(t));
 }
 /**
@@ -82,7 +102,7 @@ export function appliesOnCast(e: RawEffect): boolean {
 function lineCondition(e: RawEffect): LineCondition | "exclude" | null {
   if (appliesOnCast(e)) return null;
   const tokens = (e.targetMask ?? "A").split(",").map((t) => t.trim().replace(/^\*/, ""));
-  if (!tokens.includes("A")) return "exclude";
+  if (!hitsEnemy(tokens)) return hitsOtherEnemy(tokens) ? "conditional" : "exclude";
   if ((e.delay ?? 0) > 0) return "delayed";
   if (e.triggers && e.triggers !== "I") return "triggered";
   if (tokens.some((t) => /^[A-Z]\d+/.test(t))) return "conditional";
@@ -190,10 +210,15 @@ interface Page<T> {
  */
 function damageLines(effects: RawEffect[] | undefined, fallback = false): SpellDamageLine[] {
   return (effects ?? []).flatMap((e) => {
-    const kind = DAMAGE_EFFECTS[e.effectId];
+    const mpElement = MP_DAMAGE_EFFECTS[e.effectId];
+    const kind = mpElement
+      ? { element: mpElement, kind: "damage" as const }
+      : DAMAGE_EFFECTS[e.effectId];
     if (!kind) return [];
-    const condition = lineCondition(e);
-    if (condition === "exclude" || (condition && !fallback)) return [];
+    const found = lineCondition(e);
+    if (found === "exclude" || (found && !fallback)) return [];
+    // Selon les PM restants : une variante du sort, toujours repérée.
+    const condition = found ?? (mpElement ? "mp" : null);
     const min = e.diceNum;
     const max = e.diceSide > 0 ? e.diceSide : e.diceNum;
     return [
@@ -282,6 +307,8 @@ const BUFF_EFFECTS: Record<number, StatKey> = {
   2800: "meleeDamagePct",
   2804: "rangedDamagePct",
 };
+/** « Dommages subis x#1 % » : vulnérabilité posée sur la cible. */
+const DAMAGE_TAKEN = 1163;
 /** Cibles d'un boost : alliés (a, g) ou lanceur (c, C). */
 const BUFF_TARGETS = new Set(["a", "c", "C", "g"]);
 
@@ -291,7 +318,19 @@ const BUFF_TARGETS = new Set(["a", "c", "C", "g"]);
  * un délai sont repérés : le joueur décide s'il les compte.
  */
 export function buffLines(effects: RawEffect[] | undefined): SpellBuffLine[] {
-  return (effects ?? []).flatMap((e) => {
+  return (effects ?? []).flatMap((e): SpellBuffLine[] => {
+    // Dommages subis par les ennemis (Bond : ×115 %) : comme des dommages finaux en plus.
+    if (e.effectId === DAMAGE_TAKEN && hitsEnemy(maskTokens(e)) && e.diceNum > 100) {
+      return [
+        {
+          stat: "finalDamagePct" as const,
+          min: e.diceNum - 100,
+          max: e.diceNum - 100,
+          duration: e.duration ?? 0,
+          label: "dommages subis par la cible",
+        },
+      ];
+    }
     const stat = BUFF_EFFECTS[e.effectId];
     if (!stat) return [];
     const tokens = maskTokens(e);
@@ -319,12 +358,25 @@ export function buffLines(effects: RawEffect[] | undefined): SpellBuffLine[] {
   });
 }
 
+/** Zone de la ligne de dégâts principale (null : une seule cible). */
+export function spellZone(effects: RawEffect[] | undefined): SpellZone | null {
+  const damaging = (effects ?? []).filter((e) => DAMAGE_EFFECTS[e.effectId]);
+  const main = damaging.find((e) => appliesOnCast(e)) ?? damaging[0];
+  const zone = main?.zoneDescr;
+  if (!zone?.shape) return null;
+  const shape = String.fromCharCode(zone.shape);
+  if (shape === "P") return null;
+  return { shape, size: zone.param1 ?? 1 };
+}
+
 export function normalizeGrade(raw: RawLevel): SpellGrade {
   // Aucun dégât direct : on garde les dégâts sous condition, repérés, pour que le
   // sort apparaisse (Anneau Destructeur, poisons, sorts à état…).
   const fallback = damageLines(raw.effects).length === 0;
   const charges = spellCharges(raw);
   const buffs = buffLines(raw.effects);
+  const criticalBuffs = buffLines(raw.criticalEffect);
+  const zone = spellZone(raw.effects);
   return {
     grade: raw.grade,
     minLevel: raw.minPlayerLevel,
@@ -337,6 +389,11 @@ export function normalizeGrade(raw: RawLevel): SpellGrade {
     criticalLines: damageLines(raw.criticalEffect, fallback),
     ...(charges ? { charges } : {}),
     ...(buffs.length > 0 ? { buffs } : {}),
+    // Boosts en coup critique : seulement s'ils diffèrent (Puissance : 350 au lieu de 300).
+    ...(criticalBuffs.length > 0 && JSON.stringify(criticalBuffs) !== JSON.stringify(buffs)
+      ? { criticalBuffs }
+      : {}),
+    ...(zone ? { zone } : {}),
   };
 }
 

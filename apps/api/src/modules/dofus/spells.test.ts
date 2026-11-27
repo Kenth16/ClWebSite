@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { DofusDbClient, appliesOnCast, buffLines, normalizeGrade, spellCharges } from "./spells";
+import { zoneLabel } from "@kenpai/shared";
+import {
+  DofusDbClient,
+  appliesOnCast,
+  buffLines,
+  normalizeGrade,
+  spellCharges,
+  spellZone,
+} from "./spells";
 
 function level(id: number, spellId: number, grade: number, minPlayerLevel: number) {
   return {
@@ -295,5 +303,101 @@ describe("sorts Dofus (DofusDB)", () => {
       },
       pushback: 1,
     });
+  });
+
+  it("compte les dégâts sur les joueurs et monstres ennemis (Concentration)", () => {
+    const base = {
+      id: 1,
+      spellId: 13123,
+      grade: 3,
+      minPlayerLevel: 149,
+      apCost: 2,
+      minRange: 1,
+      range: 1,
+      criticalHitProbability: 5,
+    };
+    const grade = normalizeGrade({
+      ...base,
+      effects: [
+        { effectId: 97, diceNum: 20, diceSide: 24, targetMask: "L,M,l,m,c", triggers: "I" },
+        { effectId: 97, diceNum: 30, diceSide: 34, targetMask: "J,j", triggers: "I" },
+      ],
+      criticalEffect: [
+        { effectId: 97, diceNum: 25, diceSide: 30, targetMask: "L,M,l,m,c", triggers: "I" },
+      ],
+    });
+    // La ligne sur les invocations est une variante : écartée quand il y a une ligne directe.
+    expect(grade.lines).toEqual([{ element: "earth", kind: "damage", min: 20, max: 24 }]);
+    expect(grade.criticalLines).toEqual([{ element: "earth", kind: "damage", min: 25, max: 30 }]);
+  });
+
+  it("lit la zone du sort comme DofusBook (Épée de Iop : croix de 3 cases)", () => {
+    const hit = (shape: string, param1: number) => ({
+      effectId: 97,
+      diceNum: 37,
+      diceSide: 41,
+      targetMask: "A,g",
+      zoneDescr: { shape: shape.charCodeAt(0), param1, param2: 0 },
+    });
+    expect(spellZone([hit("X", 3)])).toEqual({ shape: "X", size: 3 });
+    expect(zoneLabel(spellZone([hit("X", 3)])!)).toBe("Croix de 3 cases");
+    expect(zoneLabel(spellZone([hit("C", 2)])!)).toBe("Cercle de 2 cases");
+    expect(zoneLabel(spellZone([hit("L", 1)])!)).toBe("Ligne de 1 case");
+    expect(spellZone([hit("P", 1)])).toBeNull(); // une seule cible
+  });
+
+  it("Zénith : la ligne selon les PM restants est repérée, Bond et Puissance donnent leurs boosts", () => {
+    const base = {
+      id: 1,
+      spellId: 13145,
+      grade: 1,
+      minPlayerLevel: 180,
+      apCost: 5,
+      minRange: 1,
+      range: 3,
+      criticalHitProbability: 25,
+    };
+    const zenith = normalizeGrade({
+      ...base,
+      effects: [
+        { effectId: 98, diceNum: 27, diceSide: 29, targetMask: "a,A", triggers: "I" },
+        { effectId: 1013, diceNum: 52, diceSide: 58, targetMask: "a,A", triggers: "I" },
+      ],
+      criticalEffect: [
+        { effectId: 98, diceNum: 31, diceSide: 35, targetMask: "a,A", triggers: "I" },
+        { effectId: 1013, diceNum: 64, diceSide: 70, targetMask: "a,A", triggers: "I" },
+      ],
+    });
+    expect(zenith.lines).toEqual([
+      { element: "air", kind: "damage", min: 27, max: 29 },
+      { element: "air", kind: "damage", min: 52, max: 58, condition: "mp" },
+    ]);
+
+    const bond = buffLines([
+      { effectId: 4, diceNum: 5, diceSide: 0, targetMask: "a,A", triggers: "I" },
+      { effectId: 1163, diceNum: 115, diceSide: 0, targetMask: "A", triggers: "D", duration: 1 },
+    ]);
+    expect(bond).toEqual([
+      {
+        stat: "finalDamagePct",
+        min: 15,
+        max: 15,
+        duration: 1,
+        label: "dommages subis par la cible",
+      },
+    ]);
+
+    const puissance = normalizeGrade({
+      ...base,
+      spellId: 13118,
+      effects: [
+        { effectId: 138, diceNum: 300, diceSide: 0, duration: 3, targetMask: "a,A", triggers: "I" },
+      ],
+      criticalEffect: [
+        { effectId: 138, diceNum: 350, diceSide: 0, duration: 3, targetMask: "a,A", triggers: "I" },
+      ],
+    });
+    expect(puissance.buffs?.[0]).toMatchObject({ stat: "power", min: 300 });
+    expect(puissance.criticalBuffs?.[0]).toMatchObject({ stat: "power", min: 350 });
   });
 });

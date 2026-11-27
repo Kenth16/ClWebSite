@@ -801,7 +801,11 @@ export interface SpellDamageLine {
 }
 
 export type ElementPick = "best" | "worst";
-export type LineCondition = "zone" | "conditional" | "triggered" | "delayed";
+/**
+ * « mp » : dégâts proportionnels aux PM restants du lanceur (Zénith) : comptés
+ * à 100 % des PM restants dans le calcul « tous PM », absents sinon.
+ */
+export type LineCondition = "zone" | "conditional" | "triggered" | "delayed" | "mp";
 
 export const LINE_CONDITION_LABELS: Record<LineCondition, { label: string; help: string }> = {
   zone: {
@@ -814,6 +818,7 @@ export const LINE_CONDITION_LABELS: Record<LineCondition, { label: string; help:
   },
   triggered: { label: "déclenché", help: "S'applique plus tard (début ou fin de tour, poison…)" },
   delayed: { label: "différé", help: "S'applique quelques tours après le lancer" },
+  mp: { label: "selon PM restants", help: "Proportionnel aux PM restants du lanceur" },
 };
 
 /** Éléments possibles d'une ligne « meilleur / pire élément ». */
@@ -864,6 +869,31 @@ export function withoutPickedLines(grade: SpellGrade): SpellGrade {
   };
 }
 
+/** Le sort lancé avec tous ses PM restants : les lignes « selon PM restants » comptent. */
+export function withAllMp(grade: SpellGrade): SpellGrade {
+  const all = (lines: SpellDamageLine[]) =>
+    lines.map((l) => {
+      if (l.condition !== "mp") return l;
+      const copy = { ...l };
+      delete copy.condition;
+      return copy;
+    });
+  return { ...grade, lines: all(grade.lines), criticalLines: all(grade.criticalLines) };
+}
+
+/** Le sort lancé sans PM restant : sans ses lignes « selon PM restants ». */
+export function withoutMpLines(grade: SpellGrade): SpellGrade {
+  const keep = (l: SpellDamageLine) => l.condition !== "mp";
+  return {
+    ...grade,
+    lines: grade.lines.filter(keep),
+    criticalLines: grade.criticalLines.filter(keep),
+  };
+}
+
+/** Le sort a-t-il des dégâts selon les PM restants ? */
+export const hasMpLines = (grade: SpellGrade) => grade.lines.some((l) => l.condition === "mp");
+
 /** Le grade sans ses dégâts sous condition (zone, état, déclenchés, différés). */
 export function withoutConditionalLines(grade: SpellGrade): SpellGrade {
   const keep = (l: SpellDamageLine) => !l.condition;
@@ -894,6 +924,41 @@ export interface SpellGrade {
   charges?: SpellCharges;
   /** Bonus de caractéristiques donnés au lanceur ou aux alliés (sorts de boost). */
   buffs?: SpellBuffLine[];
+  /** Les mêmes bonus en coup critique, s'ils diffèrent (Puissance : 350 au lieu de 300). */
+  criticalBuffs?: SpellBuffLine[];
+  /** Zone des dégâts (absente : une seule cible). */
+  zone?: SpellZone;
+}
+
+/** Zone d'un sort : forme (code du jeu) et taille. */
+export interface SpellZone {
+  shape: string;
+  size: number;
+}
+
+const ZONE_NAMES: Record<string, string> = {
+  C: "Cercle",
+  X: "Croix",
+  G: "Carré",
+  L: "Ligne",
+  T: "Ligne perpendiculaire",
+  "+": "Croix diagonale",
+  V: "Cône",
+  O: "Anneau",
+  U: "Demi-cercle",
+  Q: "Croix sans centre",
+  F: "Fourche",
+  "*": "Étoile",
+  R: "Rectangle",
+  l: "Ligne depuis le lanceur",
+  "-": "Ligne",
+};
+
+/** Libellé d'une zone, comme sur DofusBook : « Croix de 3 cases ». */
+export function zoneLabel(zone: SpellZone): string {
+  const name = ZONE_NAMES[zone.shape] ?? "Zone";
+  if (zone.size >= 63) return `${name} sur tout le terrain`;
+  return `${name} de ${zone.size} case${zone.size > 1 ? "s" : ""}`;
 }
 
 export interface SpellCharges {
@@ -913,7 +978,9 @@ export interface SpellBuffLine {
   /** Tours (−1 : jusqu'à la fin du combat). */
   duration: number;
   /** Ne s'applique pas toujours (état requis, déclenché, différé, cible précise). */
-  condition?: Exclude<LineCondition, "zone">;
+  condition?: Exclude<LineCondition, "zone" | "mp">;
+  /** Libellé à la place du nom de la stat (ex. « dommages subis par la cible »). */
+  label?: string;
 }
 
 /** Valeur retenue pour un boost : la moyenne du jet, arrondie vers le bas. */
